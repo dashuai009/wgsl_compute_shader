@@ -11,11 +11,12 @@ use bevy::{
         render_asset::{RenderAssetUsages, RenderAssets},
         render_graph::{self, RenderGraph, RenderLabel},
         render_resource::{binding_types::texture_storage_2d, *},
-        renderer::{RenderContext, RenderDevice},
+        renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::GpuImage,
         Render, RenderApp, RenderSet,
-    },
+    }, tasks::futures_lite,
 };
+use slint::wgpu_24::wgpu;
 use std::borrow::Cow;
 
 /// This example uses a shader source file from the assets subdirectory
@@ -46,10 +47,313 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
             GameOfLifeComputePlugin,
+            SimPlugin,
         ))
         .add_systems(Startup, setup)
         .add_systems(Update, switch_textures)
         .run();
+}
+#[derive(Resource)]
+struct ComputeData {
+    input: Buffer,
+    output: Buffer,
+    size: usize,
+}
+
+// prepare data
+fn setup_buffers(mut commands: Commands, render_device: Res<RenderDevice>) {
+    let input_data = vec![1u32, 2, 3, 4, 42];
+    let size_bytes = (input_data.len() * std::mem::size_of::<u32>()) as u64;
+
+    let input_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("InputBuffer"),
+        contents: bytemuck::cast_slice(&input_data),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let output_buffer = render_device.create_buffer(&BufferDescriptor {
+        label: Some("OutputBuffer"),
+        size: size_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    commands.insert_resource(ComputeData {
+        input: input_buffer,
+        output: output_buffer,
+        size: input_data.len(),
+    });
+}
+
+#[derive(Resource)]
+struct ComputePipelineData {
+    layout: BindGroupLayout,
+    pipeline: CachedComputePipelineId,
+}
+
+impl ComputePipelineData {
+    // create pipeline
+    // fn setup_pipeline(
+    //     render_device: Res<RenderDevice>,
+    //     pipeline_cache: Res<PipelineCache>,
+    //     asset_server: Res<AssetServer>,
+    //     buffers: Res<ComputeBuffers>,
+    // ) -> ComputePipelineData{
+    fn setup_pipeline(
+        render_device: &RenderDevice,
+        pipeline_cache: &PipelineCache,
+        asset_server: &AssetServer,
+    ) -> ComputePipelineData {
+        let layout = render_device.create_bind_group_layout(
+            "buffer_layout",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::COMPUTE,
+                (
+                    binding_types::storage_buffer_read_only::<u32>(false),
+                    binding_types::storage_buffer::<u32>(false),
+                ),
+            ),
+        );
+
+        // let bind_group = render_device.create_bind_group(
+        //     Some("buffer_bind_group"),
+        //     &layout,
+        //     &[
+        //         BindGroupEntry {
+        //             binding: 0,
+        //             resource: buffers.input.as_entire_binding(),
+        //         },
+        //         BindGroupEntry {
+        //             binding: 1,
+        //             resource: buffers.output.as_entire_binding(),
+        //         },
+        //     ],
+        // );
+
+        let shader = asset_server.load("shaders/buffer_add.wgsl");
+        let pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            layout: vec![layout.clone()],
+            shader,
+            entry_point: Cow::from("add_one"),
+            label: Some(Cow::from("compute_pipeline")),
+            push_constant_ranges: vec![],
+            shader_defs: vec![],
+            zero_initialize_workgroup_memory: false,
+        });
+
+        return ComputePipelineData { layout, pipeline };
+    }
+}
+
+impl FromWorld for ComputePipelineData {
+    fn from_world(world: &mut World) -> Self {
+        let device = world.resource::<RenderDevice>();
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let asset_server = world.resource::<AssetServer>();
+
+        return ComputePipelineData::setup_pipeline(
+            device,
+            pipeline_cache,
+            asset_server
+        );
+    }
+}
+
+// // commit command to compute
+// fn run_compute_shader(
+//     pipeline_cache: Res<PipelineCache>,
+//     pipeline_data: Res<ComputePipelineData>,
+//     buffers: Res<ComputeData>,
+//     render_context: &mut RenderContext,
+// ) {
+//     if let Some(pipeline) = pipeline_cache.get_compute_pipeline(pipeline_data.pipeline) {
+//         let mut pass = render_context
+//             .command_encoder()
+//             .begin_compute_pass(&ComputePassDescriptor::default());
+//         pass.set_pipeline(pipeline);
+//         pass.set_bind_group(0, &pipeline_data.bind_group, &[]);
+//         pass.dispatch_workgroups(buffers.size as u32, 1, 1);
+//     }
+// }
+
+struct SimPlugin;
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
+struct SimLabel;
+
+impl Plugin for SimPlugin {
+    fn build(&self, app: &mut App) {
+        // Extract the game of life image resource from the main world into the render world
+        // for operation on by the compute shader and display on the sprite.
+
+        // app.add_plugins(ExtractResourcePlugin::<ComputeBuffers>::default());
+
+        let render_app = app.sub_app_mut(RenderApp);
+        render_app.add_systems( ExtractSchedule, setup_buffers);
+        render_app.add_systems(Render, prepare_sim_data_bind_groups.in_set(RenderSet::PrepareBindGroups));
+        render_app.add_systems(Render, readback_and_log_system.in_set(RenderSet::Cleanup)); // for test
+
+        let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        render_graph.add_node(SimLabel, SimNode::default());
+        render_graph.add_node_edge(SimLabel, bevy::render::graph::CameraDriverLabel);
+    }
+
+    fn finish(&self, app: &mut App) {
+        let render_app = app.sub_app_mut(RenderApp);
+        render_app.init_resource::<ComputePipelineData>();
+    }
+}
+
+#[derive(Resource)]
+struct SimDataBindGroups {
+    sim_data: BindGroup,
+}
+
+fn prepare_sim_data_bind_groups(
+    mut commands: Commands,
+    pipeline: Res<ComputePipelineData>,
+    sim_buffers: Res<ComputeData>,
+    render_device: Res<RenderDevice>,
+) {
+    let input_id = sim_buffers.input.as_entire_binding();
+    let output_id = sim_buffers.output.as_entire_binding();
+
+    let bind_group_0 = render_device.create_bind_group(
+        None,
+        &pipeline.layout,
+        &BindGroupEntries::sequential((input_id, output_id)),
+    );
+    commands.insert_resource(SimDataBindGroups {
+        sim_data: bind_group_0,
+    });
+}
+
+enum SimState {
+    Loading,
+    Init,
+    Update,
+}
+
+struct SimNode {
+    state: SimState,
+}
+
+impl Default for SimNode {
+    fn default() -> Self {
+        SimNode {
+            state: SimState::Loading,
+        }
+    }
+}
+
+impl render_graph::Node for SimNode {
+    fn update(&mut self, world: &mut World) {
+        let pipeline = world.resource::<ComputePipelineData>();
+        let pipeline_cache = world.resource::<PipelineCache>();
+
+        // if the corresponding pipeline has loaded, transition to the next stage
+        match self.state {
+             SimState::Loading  => {
+                match pipeline_cache.get_compute_pipeline_state(pipeline.pipeline) {
+                    CachedPipelineState::Ok(_) => {
+                        self.state = SimState::Update;
+                    }
+                    CachedPipelineState::Err(err) => {
+                        panic!("Initializing assets/{SHADER_ASSET_PATH}:\n{err}")
+                    }
+                    _ => {}
+                }
+            }
+            SimState::Init => {
+            }
+            SimState::Update => {}
+        }
+    }
+
+    fn run(
+        &self,
+        graph: &mut render_graph::RenderGraphContext,
+        render_context: &mut RenderContext,
+        world: &World,
+    ) -> std::result::Result<(), render_graph::NodeRunError> {
+        let bind_groups = world.resource::<SimDataBindGroups>();
+        let pipeline_cache = world.resource::<PipelineCache>();
+        let pipeline = world.resource::<ComputePipelineData>();
+
+        let mut pass = render_context
+            .command_encoder()
+            .begin_compute_pass(&ComputePassDescriptor::default());
+
+        // select the pipeline based on the current state
+        match self.state {
+            SimState::Loading => {}
+            SimState::Init => {
+                // let init_pipeline = pipeline_cache
+                //     .get_compute_pipeline(pipeline.init_pipeline)
+                //     .unwrap();
+                // pass.set_bind_group(0, &bind_groups[0], &[]);
+                // pass.set_pipeline(init_pipeline);
+                // pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
+            }
+            SimState::Update => {
+                println!("update");
+                let update_pipeline = pipeline_cache
+                    .get_compute_pipeline(pipeline.pipeline)
+                    .unwrap();
+                pass.set_bind_group(0, &bind_groups.sim_data, &[]);
+                pass.set_pipeline(update_pipeline);
+                pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+
+
+/// 每帧把 GPU Buffer 拷回 CPU 并打印
+fn readback_and_log_system(
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    gpu: Res<ComputeData>,
+) {
+    // 1. 创建 staging buffer
+    let staging = render_device.create_buffer(&BufferDescriptor {
+        label: Some("staging_readback"),
+        size: (gpu.size * std::mem::size_of::<u32>()) as u64,
+        usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // 2. 拷贝 GPU→CPU 缓冲
+    let mut encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("readback_encoder"),
+    });
+    encoder.copy_buffer_to_buffer(&gpu.output, 0, &staging, 0, (gpu.size * std::mem::size_of::<u32>()) as u64);
+    render_queue.submit(Some(encoder.finish()));
+
+    // 3. 异步映射 & 轮询完成
+    //    这里用 block_on + poll(WAIT) 简化演示；正式项目可用 bevy_task::IoTaskPool
+    let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+    staging
+        .slice(..)
+        .map_async(MapMode::Read, move |v| sender.send(v).unwrap());
+
+    // 阻塞等完成（非 WASM 环境可用 WAIT；WASM 需放到回调里）
+    render_device.wgpu_device().poll(wgpu::Maintain::Wait);
+    futures_lite::future::block_on(async {
+        receiver.receive().await;
+    });
+
+    // 4. 读取数据
+    let bytes = staging.slice(..).get_mapped_range();
+    let floats: &[u32] = bytemuck::cast_slice(&bytes);
+    println!("GPU buffer contents: {:?}", floats);
+
+    // 5. 解除映射，方便下次使用
+    drop(bytes);
+    staging.unmap();
 }
 
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {

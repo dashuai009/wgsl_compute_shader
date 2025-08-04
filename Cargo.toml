@@ -22,3 +22,5 @@ bevy = { version = "0.16.0" }
 smol = { version = "2.0.0" }
 async-compat = { version = "0.2.4" }
 reqwest = { version = "0.12", features = ["stream"] }
+bytemuck = "1.23.1"
+futures-intrusive = "0.5.0"
