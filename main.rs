@@ -1,11 +1,14 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: MIT
 
-use bevy::prelude::*;
+use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 
+use crate::custom_material::MyExtension;
 mod slint_bevy_adapter;
 mod web_asset;
+mod custom_material;
 
 slint::slint! {
 import { Palette, Button, ComboBox, GroupBox, GridBox, Slider, HorizontalBox, VerticalBox, ProgressIndicator } from "std-widgets.slint";
@@ -109,9 +112,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "https://github.com/KhronosGroup/glTF-Sample-Assets/raw/refs/heads/main/"
                             .into(),
                     ))
+                    .add_plugins(MaterialPlugin::<
+                        ExtendedMaterial<StandardMaterial, custom_material::MyExtension>
+                    >::default())
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
                     .add_systems(Update, animate_camera)
+                    .add_observer(change_material)
                     .insert_resource(ClearColor(Color::NONE))
                     .run();
             },
@@ -176,6 +183,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let models = slint::VecModel::from_slice(&[
         GLTFModel {
+            name: "Box".into(),
+            path: "Models/Box/glTF-Binary/Box.glb".into(),
+            center: Vec3::new(3.0, 4.0, 4.0),
+        },
+        GLTFModel {
             name: "Damaged Helmet".into(),
             path: "Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb".into(),
             center: Vec3::new(3.0, 4.0, 4.0),
@@ -184,11 +196,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: "Fish".into(),
             path: "Models/BarramundiFish/glTF-Binary/BarramundiFish.glb".into(),
             center: Vec3::new(3.0, 2.0, 1.0),
-        },
-        GLTFModel {
-            name: "Box".into(),
-            path: "Models/Box/glTF-Binary/Box.glb".into(),
-            center: Vec3::new(3.0, 4.0, 4.0),
         },
     ]);
 
@@ -244,6 +251,50 @@ fn setup(mut commands: Commands, camera: Res<CameraPos>) {
     */
 }
 
+
+fn change_material(
+    trigger: Trigger<SceneInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    scene_root: Query<&SceneRoot>,
+    mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut asset_materials: ResMut<Assets<StandardMaterial>>,
+    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, MyExtension>>>,
+) {
+    // Get the `ColorOverride` of the entity, if it does not have a color override, skip
+    let Ok(scene) = scene_root.get(trigger.target()) else {
+        return;
+    };
+
+    // Iterate over all children recursively
+    for descendants in children.iter_descendants(trigger.target()) {
+        // Get the material of the descendant
+        if let Some(material) = mesh_materials
+            .get(descendants)
+            .ok()
+            .and_then(|id| asset_materials.get_mut(id.id()))
+        {
+            // Create a copy of the material and override base color
+            // If you intend on creating multiple models with the same tint, it
+            // is best to cache the handle somewhere, as having multiple materials
+            // that are identical is expensive
+            let new_material = material.clone();
+            // new_material.base_color = color_override.0;
+            let extended_material = ExtendedMaterial {
+                base: new_material,
+                extension: MyExtension { quantize_steps: 10 },
+            };
+            // Override `MeshMaterial3d` with new material
+            commands
+                .entity(descendants)
+                .log_components()
+                .remove::<MeshMaterial3d<StandardMaterial>>()
+                .insert(MeshMaterial3d(ext_materials.add(extended_material)));
+        }
+    }
+}
+
+
 fn reload_model_from_channel(
     receiver: smol::channel::Receiver<GLTFModel>,
 ) -> impl FnMut(
@@ -252,20 +303,51 @@ fn reload_model_from_channel(
     Query<Entity, With<SceneRoot>>,
     ResMut<CameraPos>,
     Res<ModelBasePath>,
+    ResMut<Assets<Mesh>>,    
+    ResMut<Assets<StandardMaterial>>,
+    ResMut<Assets<ExtendedMaterial<StandardMaterial, MyExtension>>>,
 ) {
-    move |mut commands, asset_server, loaded_bundles, mut camera, base_path| {
+    move |mut commands, asset_server, loaded_bundles, mut camera, base_path, mut meshes, mut std_mats, mut ext_materials| {
         let Ok(new_model) = receiver.try_recv() else {
             return;
         };
         for loaded_bundle in loaded_bundles.iter() {
             commands.entity(loaded_bundle).despawn();
         }
+        // let mesh = asset_server.load(
+        //          GltfAssetLabel::Primitive {
+        //             mesh: 0,
+        //             primitive: 0,
+        //         }.from_asset(format!("{}{}", base_path.0, new_model.path)),
+        //     );
+        let mat: Handle<StandardMaterial> = asset_server.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }.from_asset(format!("{}{}", base_path.0, new_model.path)),
+        );
+
+        // // let std_mat = std_mats.add(mat);
+        // let xx = std_mats.get(mat.id()).unwrap().clone();
+
+        // // let extended_material = ExtendedMaterial {
+        // //     base: xx,
+        // //     extension: MyExtension { quantize_steps: 10 },
+        // // };
+
+        // // let handle = ext_materials.add(extended_material);
+
         commands.spawn(SceneRoot(
             //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),
             asset_server.load(
                 GltfAssetLabel::Scene(0).from_asset(format!("{}{}", base_path.0, new_model.path)),
             ),
         ));
+        // commands.spawn((
+        //     //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),
+        //    Mesh3d(mesh),
+        //    MeshMaterial3d(mat)
+        // ));
         camera.0 = new_model.center;
     }
 }
@@ -280,5 +362,6 @@ fn animate_camera(
         // transform.translation = vec3(ops::cos(now), 0.0, ops::sin(now)) * vec3(3.0, 4.0, 4.0);
         transform.translation = vec3(ops::cos(now), 0.0, ops::sin(now)) * camera.0;
         transform.look_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
+        println!("new tfm: {:?}", transform);
     }
 }

@@ -17,10 +17,10 @@ path = "game_of_life.rs"
 
 [dependencies]
 slint = { version = "1.12.1", features = ["unstable-wgpu-24"] }
-spin_on = { version = "0.1" }
-bevy = { version = "0.16.0" }
-smol = { version = "2.0.0" }
+spin_on = { version = "0.1.1" }
+bevy = { version = "0.16.0", default-features = false, features = ["bevy_core_pipeline", "bevy_pbr", "bevy_window", "bevy_scene", "bevy_gltf", "bevy_log", "jpeg", "png", "tonemapping_luts", "multi_threaded", "bevy_sprite"]  }
+smol = { version = "2.0.2" }
 async-compat = { version = "0.2.4" }
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12.22", features = ["stream"] }
 bytemuck = "1.23.1"
 futures-intrusive = "0.5.0"
