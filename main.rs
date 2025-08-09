@@ -4,6 +4,7 @@
 use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::custom_material::MyExtension;
 mod slint_bevy_adapter;
@@ -107,17 +108,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             |mut app| {
                 app.insert_resource(CameraPos(Vec3::new(3., 4.0, 4.0)))
-                    //                    .insert_resource(ModelBasePath("".into()))
-                    .insert_resource(ModelBasePath(
-                        "https://github.com/KhronosGroup/glTF-Sample-Assets/raw/refs/heads/main/"
-                            .into(),
-                    ))
+                    .insert_resource(ModelBasePath("".into()))
+                    // .insert_resource(ModelBasePath(
+                    //     "https://github.com/KhronosGroup/glTF-Sample-Assets/raw/refs/heads/main/"
+                    //         .into(),
+                    // ))
                     .add_plugins(MaterialPlugin::<
                         ExtendedMaterial<StandardMaterial, custom_material::MyExtension>
                     >::default())
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
-                    .add_systems(Update, animate_camera)
+                    // .add_systems(Update, animate_camera)
                     .add_observer(change_material)
                     .insert_resource(ClearColor(Color::NONE))
                     .run();
@@ -184,19 +185,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = slint::VecModel::from_slice(&[
         GLTFModel {
             name: "Box".into(),
-            path: "Models/Box/glTF-Binary/Box.glb".into(),
+            path: "Box.glb".into(),
             center: Vec3::new(3.0, 4.0, 4.0),
         },
         GLTFModel {
             name: "Damaged Helmet".into(),
-            path: "Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb".into(),
+            path: "DamagedHelmet.glb".into(),
             center: Vec3::new(3.0, 4.0, 4.0),
         },
-        GLTFModel {
-            name: "Fish".into(),
-            path: "Models/BarramundiFish/glTF-Binary/BarramundiFish.glb".into(),
-            center: Vec3::new(3.0, 2.0, 1.0),
-        },
+        // GLTFModel {
+        //     name: "Box".into(),
+        //     path: "Models/Box/glTF-Binary/Box.glb".into(),
+        //     center: Vec3::new(3.0, 4.0, 4.0),
+        // },
+        // GLTFModel {
+        //     name: "Damaged Helmet".into(),
+        //     path: "Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb".into(),
+        //     center: Vec3::new(3.0, 4.0, 4.0),
+        // },
+        // GLTFModel {
+        //     name: "Fish".into(),
+        //     path: "Models/BarramundiFish/glTF-Binary/BarramundiFish.glb".into(),
+        //     center: Vec3::new(3.0, 2.0, 1.0),
+        // },
     ]);
 
     app_window
@@ -287,9 +298,9 @@ fn change_material(
             // Override `MeshMaterial3d` with new material
             commands
                 .entity(descendants)
-                .log_components()
                 .remove::<MeshMaterial3d<StandardMaterial>>()
-                .insert(MeshMaterial3d(ext_materials.add(extended_material)));
+                .insert(MeshMaterial3d(ext_materials.add(extended_material)))
+                .log_components();
         }
     }
 }
@@ -362,6 +373,5 @@ fn animate_camera(
         // transform.translation = vec3(ops::cos(now), 0.0, ops::sin(now)) * vec3(3.0, 4.0, 4.0);
         transform.translation = vec3(ops::cos(now), 0.0, ops::sin(now)) * camera.0;
         transform.look_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
-        println!("new tfm: {:?}", transform);
     }
 }
