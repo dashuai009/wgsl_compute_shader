@@ -4,12 +4,14 @@
 use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
-use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::custom_material::MyExtension;
+use crate::init_phys_data::SimPlugin;
+
 mod slint_bevy_adapter;
 mod web_asset;
 mod custom_material;
+mod init_phys_data;
 
 slint::slint! {
 import { Palette, Button, ComboBox, GroupBox, GridBox, Slider, HorizontalBox, VerticalBox, ProgressIndicator } from "std-widgets.slint";
@@ -116,10 +118,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .add_plugins(MaterialPlugin::<
                         ExtendedMaterial<StandardMaterial, custom_material::MyExtension>
                     >::default())
+                    .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
-                    // .add_systems(Update, animate_camera)
-                    .add_observer(change_material)
+                    .add_systems(Update, animate_camera)
+                    // .add_observer(change_material)
+                    .add_observer(init_phys_data::dump_mesh_cpu_data_system)
                     .insert_resource(ClearColor(Color::NONE))
                     .run();
             },
