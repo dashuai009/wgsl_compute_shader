@@ -5,12 +5,10 @@ use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 
-use crate::custom_material::MyExtension;
 use crate::init_phys_data::SimPlugin;
 
 mod slint_bevy_adapter;
 mod web_asset;
-mod custom_material;
 mod init_phys_data;
 
 slint::slint! {
@@ -116,13 +114,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //         .into(),
                     // ))
                     .add_plugins(MaterialPlugin::<
-                        ExtendedMaterial<StandardMaterial, custom_material::MyExtension>
+                        ExtendedMaterial<StandardMaterial, init_phys_data::PhysData>
                     >::default())
-                    .add_plugins(SimPlugin)
+                    // .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
                     .add_systems(Update, animate_camera)
-                    // .add_observer(change_material)
                     .add_observer(init_phys_data::dump_mesh_cpu_data_system)
                     .insert_resource(ClearColor(Color::NONE))
                     .run();
@@ -188,14 +185,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let models = slint::VecModel::from_slice(&[
         GLTFModel {
-            name: "Box".into(),
-            path: "Box.glb".into(),
-            center: Vec3::new(3.0, 4.0, 4.0),
+            name: "Untitled".into(),
+            path: "Untitled.glb".into(),
+            center: Vec3::new(6.0, 8.0, 8.0),
         },
         GLTFModel {
             name: "Damaged Helmet".into(),
             path: "DamagedHelmet.glb".into(),
             center: Vec3::new(3.0, 4.0, 4.0),
+        },
+        GLTFModel {
+            name: "Box".into(),
+            path: "Box.glb".into(),
+            center: Vec3::new(6.0, 8.0, 8.0),
         },
         // GLTFModel {
         //     name: "Box".into(),
@@ -250,7 +252,7 @@ fn setup(mut commands: Commands, camera: Res<CameraPos>) {
     commands.spawn(DirectionalLight { illuminance: 100_000.0, ..default() });
     commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(camera.0).looking_at(Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
+        Transform::from_translation(camera.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
         PointLight { color: Color::linear_rgb(0.5, 0., 0.), ..default() },
     ));
 
@@ -267,49 +269,6 @@ fn setup(mut commands: Commands, camera: Res<CameraPos>) {
 }
 
 
-fn change_material(
-    trigger: Trigger<SceneInstanceReady>,
-    mut commands: Commands,
-    children: Query<&Children>,
-    scene_root: Query<&SceneRoot>,
-    mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
-    mut asset_materials: ResMut<Assets<StandardMaterial>>,
-    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, MyExtension>>>,
-) {
-    // Get the `ColorOverride` of the entity, if it does not have a color override, skip
-    let Ok(scene) = scene_root.get(trigger.target()) else {
-        return;
-    };
-
-    // Iterate over all children recursively
-    for descendants in children.iter_descendants(trigger.target()) {
-        // Get the material of the descendant
-        if let Some(material) = mesh_materials
-            .get(descendants)
-            .ok()
-            .and_then(|id| asset_materials.get_mut(id.id()))
-        {
-            // Create a copy of the material and override base color
-            // If you intend on creating multiple models with the same tint, it
-            // is best to cache the handle somewhere, as having multiple materials
-            // that are identical is expensive
-            let new_material = material.clone();
-            // new_material.base_color = color_override.0;
-            let extended_material = ExtendedMaterial {
-                base: new_material,
-                extension: MyExtension { quantize_steps: 10 },
-            };
-            // Override `MeshMaterial3d` with new material
-            commands
-                .entity(descendants)
-                .remove::<MeshMaterial3d<StandardMaterial>>()
-                .insert(MeshMaterial3d(ext_materials.add(extended_material)))
-                .log_components();
-        }
-    }
-}
-
-
 fn reload_model_from_channel(
     receiver: smol::channel::Receiver<GLTFModel>,
 ) -> impl FnMut(
@@ -320,9 +279,8 @@ fn reload_model_from_channel(
     Res<ModelBasePath>,
     ResMut<Assets<Mesh>>,    
     ResMut<Assets<StandardMaterial>>,
-    ResMut<Assets<ExtendedMaterial<StandardMaterial, MyExtension>>>,
 ) {
-    move |mut commands, asset_server, loaded_bundles, mut camera, base_path, mut meshes, mut std_mats, mut ext_materials| {
+    move |mut commands, asset_server, loaded_bundles, mut camera, base_path, mut meshes, mut std_mats| {
         let Ok(new_model) = receiver.try_recv() else {
             return;
         };

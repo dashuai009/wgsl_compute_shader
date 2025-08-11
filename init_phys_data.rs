@@ -1,4 +1,3 @@
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::render::mesh::{Indices, VertexAttributeValues};
 use bevy::render::render_graph::{RenderGraph, RenderLabel};
 use bevy::render::render_resource::{
@@ -10,18 +9,24 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::{RenderContext, RenderDevice};
 use bevy::render::{render_graph, Render, RenderApp, RenderSet};
 use bevy::{
-    color::palettes::basic::PURPLE,
+    pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
+        mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef},
         render_asset::{RenderAssetUsages, RenderAssets},
+        render_resource::*,
         render_resource::{binding_types::texture_storage_2d, *},
         renderer::RenderQueue,
         texture::GpuImage,
     },
+    sprite::{Material2d, Material2dKey},
     tasks::futures_lite,
 };
+
+use bevy::render::storage::ShaderStorageBuffer;
 use bevy::{prelude::*, scene::SceneInstanceReady};
+use bytemuck::cast_slice;
 use slint::wgpu_24::wgpu;
 use slint::{Model, SharedString};
 use std::borrow::Cow;
@@ -33,6 +38,26 @@ const DISPLAY_FACTOR: u32 = 4;
 
 const SIZE: (u32, u32) = (1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
 const WORKGROUP_SIZE: u32 = 8;
+
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub struct PhysData {
+    // We need to ensure that the bindings of the base material and the extension do not conflict,
+    // so we start from binding slot 100, leaving slots 0-99 for the base material.
+    #[storage(100)]
+    pos: Handle<ShaderStorageBuffer>, // [vec3<f32>; points_size]
+    #[storage(101)]
+    tet_indices: Handle<ShaderStorageBuffer>, // [vec4<u32>; tet_size]
+    #[uniform(102)]
+    points_size: u32,
+    #[uniform(103)]
+    tet_size: u32,
+}
+
+impl MaterialExtension for PhysData {
+    fn vertex_shader() -> ShaderRef {
+        SHADER_ASSET_PATH.into()
+    }
+}
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct MeshInputData {
@@ -55,6 +80,10 @@ pub fn dump_mesh_cpu_data_system(
     scene_roots: Query<&SceneRoot>,
     mesh_handles: Query<&Mesh3d>,
     meshes: Res<Assets<Mesh>>,
+    mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
+    mut asset_materials: ResMut<Assets<StandardMaterial>>,
+    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PhysData>>>,
 ) {
     let Ok(_scene_root) = scene_roots.get(trigger.target()) else {
         return;
@@ -68,6 +97,7 @@ pub fn dump_mesh_cpu_data_system(
                 let positions: Vec<[f32; 3]> = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
                     Some(VertexAttributeValues::Float32x3(v)) => v.clone(),
                     Some(VertexAttributeValues::Float32x4(v)) => {
+                        println!("errrrrrrr");
                         v.iter().map(|p| [p[0], p[1], p[2]]).collect()
                     }
                     other => {
@@ -85,61 +115,58 @@ pub fn dump_mesh_cpu_data_system(
                 };
 
                 info!(
-                    "Entity {:?}: positions = {}, indices = {}, topology = {:?}",
+                    "Entity {:?}:pos_size: {}, positions = {:?},indices_size: {}, indices = {:?}, topology = {:?}",
                     e,
                     positions.len(),
+                    positions,
                     indices_u32.len(),
+                    indices_u32,
                     mesh.primitive_topology()
                 );
 
+                // Get the material of the descendant
+                if let Some(material) = mesh_materials
+                    .get(e)
+                    .ok()
+                    .and_then(|id| asset_materials.get_mut(id.id()))
+                {
+                    let points_size = positions.len() as u32;
+                    let tet_size = indices_u32.len() as u32;
+                    let pos_buffer = buffers.add(ShaderStorageBuffer::from(
+                        positions
+                            .into_iter()
+                            .flatten() // 自动展平 [f32; 3]
+                            .collect::<Vec<_>>(),
+                    ));
 
-                // 这里你可以：
-                // 1) 把 positions / indices 存到你自己的资源里；
-                // 2) 做 CPU 侧计算；
-                // 3) 或者上传到你自己的 StorageBuffer 做 GPU 计算。
-                // 例如：
-                // my_resource.collect(mesh3d.clone(), positions, indices_u32);
-                commands.insert_resource(MeshInputData::new(positions, indices_u32));
+                    let tet_indices_buffer = buffers.add(ShaderStorageBuffer::from(indices_u32));
+
+                    // Create a copy of the material and override base color
+                    // If you intend on creating multiple models with the same tint, it
+                    // is best to cache the handle somewhere, as having multiple materials
+                    // that are identical is expensive
+                    let new_material = material.clone();
+                    // new_material.base_color = color_override.0;
+                    let extended_material = ExtendedMaterial {
+                        base: new_material,
+                        extension: PhysData {
+                            pos: pos_buffer,
+                            tet_indices: tet_indices_buffer,
+                            points_size,
+                            tet_size,
+                        },
+                    };
+                    // Override `MeshMaterial3d` with new material
+                    commands
+                        .entity(e)
+                        .remove::<MeshMaterial3d<StandardMaterial>>()
+                        .insert(MeshMaterial3d(ext_materials.add(extended_material)))
+                        .log_components();
+                }
             }
         }
     }
 }
-
-#[derive(Resource, Clone, ExtractResource)]
-struct PhysData {
-    pos: Buffer,         // [vec3<f32>; points_size]
-    tet_indices: Buffer, // [vec4<u32>; tet_size]
-    points_size: usize,
-    tet_size: usize,
-}
-
-// prepare data
-fn upload_phys_data_buffers(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    mesh_input_data: Res<MeshInputData>,
-) {
-    info!("upload_phys_data_buffers");
-    let pos_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("positions"),
-        contents: bytemuck::cast_slice(&mesh_input_data.positions),
-        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-    });
-
-    let tet_indices_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("tet_indices"),
-        contents: bytemuck::cast_slice(&mesh_input_data.indices),
-        usage: BufferUsages::STORAGE,
-    });
-
-    commands.insert_resource(PhysData {
-        pos: pos_buffer,
-        tet_indices: tet_indices_buffer,
-        points_size: mesh_input_data.positions.len(),
-        tet_size: mesh_input_data.indices.len(),
-    });
-}
-
 
 #[derive(Debug, Copy, Clone)]
 pub enum SimState {
@@ -148,12 +175,10 @@ pub enum SimState {
     UpdatePos,
 }
 
-
-
 #[derive(Resource)]
 pub struct SimPipelineData {
     layout: BindGroupLayout,
-    sim_pipeline: CachedComputePipelineId
+    sim_pipeline: CachedComputePipelineId,
 }
 
 impl SimPipelineData {
@@ -186,7 +211,7 @@ impl SimPipelineData {
 
         return SimPipelineData {
             layout,
-            sim_pipeline
+            sim_pipeline,
         };
     }
 }
@@ -201,7 +226,6 @@ impl FromWorld for SimPipelineData {
     }
 }
 
-
 pub struct SimPlugin;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
@@ -215,18 +239,12 @@ impl Plugin for SimPlugin {
         app.add_plugins(ExtractResourcePlugin::<MeshInputData>::default());
 
         let render_app = app.sub_app_mut(RenderApp);
-        render_app.add_systems(
-            Render,
-            upload_phys_data_buffers
-                .in_set(RenderSet::PrepareResources)
-                .run_if(resource_added::<MeshInputData>) // 只在第一次出现时执行
-        );
-        render_app.add_systems(
-            Render,
-            prepare_sim_data_bind_groups
-                .in_set(RenderSet::PrepareBindGroups)
-                .run_if(resource_added::<PhysData>) // 只在第一次出现时执行,
-        );
+        // render_app.add_systems(
+        //     Render,
+        //     prepare_sim_data_bind_groups
+        //         .in_set(RenderSet::PrepareBindGroups)
+        //         .run_if(resource_added::<PhysData>), // 只在第一次出现时执行,
+        // );
         // render_app.add_systems(Render, readback_and_log_system.in_set(RenderSet::Cleanup)); // for test
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
@@ -245,27 +263,27 @@ struct PhysDataBindGroups {
     phys_data_bind_group: BindGroup,
 }
 
-fn prepare_sim_data_bind_groups(
-    mut commands: Commands,
-    pipeline: Res<SimPipelineData>,
-    phys_data_buffers: Res<PhysData>,
-    render_device: Res<RenderDevice>,
-) {
-    info!("prepare phys data bind groups");
-    let pos_buffer_id = phys_data_buffers.pos.as_entire_binding();
-    let tet_indices_buffer_id = phys_data_buffers.tet_indices.as_entire_binding();
+// fn prepare_sim_data_bind_groups(
+//     mut commands: Commands,
+//     pipeline: Res<SimPipelineData>,
+//     phys_data_buffers: Res<PhysData>,
+//     render_device: Res<RenderDevice>,
+// ) {
+//     info!("prepare phys data bind groups");
+//     let pos_buffer_id = phys_data_buffers.pos.as_entire_binding();
+//     let tet_indices_buffer_id = phys_data_buffers.tet_indices.as_entire_binding();
+//
+//     let bind_group_0 = render_device.create_bind_group(
+//         None,
+//         &pipeline.layout,
+//         &BindGroupEntries::sequential((pos_buffer_id, tet_indices_buffer_id)),
+//     );
+//     commands.insert_resource(PhysDataBindGroups {
+//         phys_data_bind_group: bind_group_0,
+//     });
+// }
 
-    let bind_group_0 = render_device.create_bind_group(
-        None,
-        &pipeline.layout,
-        &BindGroupEntries::sequential((pos_buffer_id, tet_indices_buffer_id)),
-    );
-    commands.insert_resource(PhysDataBindGroups {
-        phys_data_bind_group: bind_group_0,
-    });
-}
-
-struct SimNode{
+struct SimNode {
     sim_state: SimState,
 }
 
@@ -311,7 +329,7 @@ impl render_graph::Node for SimNode {
         if !world.contains_resource::<PhysDataBindGroups>() {
             return Ok(());
         }
-        let phys_data = world.resource::<PhysData>();
+        // let phys_data = world.resource::<PhysData>();
         let bind_groups = world.resource::<PhysDataBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<SimPipelineData>();
@@ -337,7 +355,7 @@ impl render_graph::Node for SimNode {
                     .unwrap();
                 pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
                 pass.set_pipeline(update_pipeline);
-                pass.dispatch_workgroups(phys_data.points_size as u32 / WORKGROUP_SIZE, phys_data.points_size as u32 / WORKGROUP_SIZE, 1);
+                // pass.dispatch_workgroups(phys_data.points_size as u32 / WORKGROUP_SIZE, phys_data.points_size as u32 / WORKGROUP_SIZE, 1);
             }
         }
 
