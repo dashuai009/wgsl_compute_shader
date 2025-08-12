@@ -1,5 +1,5 @@
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip};
-
+#import bevy_pbr::mesh_bindings::mesh;
 #ifdef PREPASS_PIPELINE
 // https://github.com/bevyengine/bevy/blob/main/crates/bevy_pbr/src/prepass/prepass_io.wgsl
 #import bevy_pbr::{
@@ -28,10 +28,14 @@ fn vertex(v: Vertex, @builtin(vertex_index) vid: u32) -> VertexOutput {
     // 物体的 world_from_local（实例变换）
     let world_from_local = get_world_from_local(v.instance_index);
 
+
+    let first_vertex = mesh[v.instance_index].first_vertex_index;
+    let vvid = vid - first_vertex;
+
     // 本地位置（扩成 vec4），加一个小偏移（只动 xyz，w 仍为 1）
     // let vertex_id = tet_indices[vid];     // 先查索引
     // let base = 3u * vertex_id;            // 再定位位置
-    let base = 3u * vid;                      // xyz 连续存放
+    let base = 3u * vvid;                      // xyz 连续存放
     let p = vec3<f32>(pos[base], pos[base+1u], pos[base+2u]);
     let local_pos4 =
         vec4<f32>(p + vec3<f32>(0, 0, 0), 1.0);
