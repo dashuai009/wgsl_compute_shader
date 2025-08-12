@@ -114,9 +114,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //         .into(),
                     // ))
                     .add_plugins(MaterialPlugin::<
-                        ExtendedMaterial<StandardMaterial, init_phys_data::PhysData>
+                        ExtendedMaterial<StandardMaterial, init_phys_data::PositionData>
                     >::default())
-                    // .add_plugins(SimPlugin)
+                    .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
                     .add_systems(Update, animate_camera)
@@ -209,11 +209,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         //     path: "Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb".into(),
         //     center: Vec3::new(3.0, 4.0, 4.0),
         // },
-        // GLTFModel {
-        //     name: "Fish".into(),
-        //     path: "Models/BarramundiFish/glTF-Binary/BarramundiFish.glb".into(),
-        //     center: Vec3::new(3.0, 2.0, 1.0),
-        // },
+        GLTFModel {
+            name: "Fish".into(),
+            path: "BarramundiFish.glb".into(),
+            center: Vec3::new(3.0, 2.0, 4.0),
+        },
     ]);
 
     app_window

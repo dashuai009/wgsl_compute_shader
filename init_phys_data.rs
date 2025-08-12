@@ -24,7 +24,7 @@ use bevy::{
     tasks::futures_lite,
 };
 
-use bevy::render::storage::ShaderStorageBuffer;
+use bevy::render::storage::{GpuShaderStorageBuffer, ShaderStorageBuffer};
 use bevy::{prelude::*, scene::SceneInstanceReady};
 use bytemuck::cast_slice;
 use slint::wgpu_24::wgpu;
@@ -32,42 +32,33 @@ use slint::{Model, SharedString};
 use std::borrow::Cow;
 
 /// This example uses a shader source file from the assets subdirectory
-const SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
+const VERTEX_SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
+const ARAP_SHADER_ASSET_PATH: &str = "shaders/arap.wgsl";
 
 const DISPLAY_FACTOR: u32 = 4;
 
 const SIZE: (u32, u32) = (1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
 const WORKGROUP_SIZE: u32 = 8;
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Resource, Clone, ExtractResource)]
 pub struct PhysData {
+    pub pos: Handle<ShaderStorageBuffer>,
+    pub tet_indices: Handle<ShaderStorageBuffer>,
+    pub points_size: u32,
+    pub tet_size: u32,
+}
+
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub struct PositionData {
     // We need to ensure that the bindings of the base material and the extension do not conflict,
     // so we start from binding slot 100, leaving slots 0-99 for the base material.
     #[storage(100)]
     pos: Handle<ShaderStorageBuffer>, // [vec3<f32>; points_size]
-    #[storage(101)]
-    tet_indices: Handle<ShaderStorageBuffer>, // [vec4<u32>; tet_size]
-    #[uniform(102)]
-    points_size: u32,
-    #[uniform(103)]
-    tet_size: u32,
 }
 
-impl MaterialExtension for PhysData {
+impl MaterialExtension for PositionData {
     fn vertex_shader() -> ShaderRef {
-        SHADER_ASSET_PATH.into()
-    }
-}
-
-#[derive(Resource, Clone, ExtractResource)]
-pub struct MeshInputData {
-    positions: Vec<[f32; 3]>,
-    indices: Vec<u32>,
-}
-
-impl MeshInputData {
-    pub fn new(positions: Vec<[f32; 3]>, indices: Vec<u32>) -> Self {
-        Self { positions, indices }
+        VERTEX_SHADER_ASSET_PATH.into()
     }
 }
 
@@ -83,7 +74,7 @@ pub fn dump_mesh_cpu_data_system(
     mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     mut asset_materials: ResMut<Assets<StandardMaterial>>,
-    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PhysData>>>,
+    mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PositionData>>>,
 ) {
     let Ok(_scene_root) = scene_roots.get(trigger.target()) else {
         return;
@@ -141,6 +132,12 @@ pub fn dump_mesh_cpu_data_system(
 
                     let tet_indices_buffer = buffers.add(ShaderStorageBuffer::from(indices_u32));
 
+                    let phys_data = PhysData {
+                        pos: pos_buffer.clone(),
+                        tet_indices: tet_indices_buffer,
+                        points_size,
+                        tet_size,
+                    };
                     // Create a copy of the material and override base color
                     // If you intend on creating multiple models with the same tint, it
                     // is best to cache the handle somewhere, as having multiple materials
@@ -149,12 +146,7 @@ pub fn dump_mesh_cpu_data_system(
                     // new_material.base_color = color_override.0;
                     let extended_material = ExtendedMaterial {
                         base: new_material,
-                        extension: PhysData {
-                            pos: pos_buffer,
-                            tet_indices: tet_indices_buffer,
-                            points_size,
-                            tet_size,
-                        },
+                        extension: PositionData { pos: pos_buffer },
                     };
                     // Override `MeshMaterial3d` with new material
                     commands
@@ -162,6 +154,8 @@ pub fn dump_mesh_cpu_data_system(
                         .remove::<MeshMaterial3d<StandardMaterial>>()
                         .insert(MeshMaterial3d(ext_materials.add(extended_material)))
                         .log_components();
+
+                    commands.insert_resource(phys_data);
                 }
             }
         }
@@ -197,12 +191,11 @@ impl SimPipelineData {
                 ),
             ),
         );
-
-        let shader = asset_server.load(SHADER_ASSET_PATH);
+        let shader = asset_server.load(ARAP_SHADER_ASSET_PATH);
         let sim_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             layout: vec![layout.clone()],
             shader,
-            entry_point: Cow::from("add_one"),
+            entry_point: Cow::from("cs_arap"),
             label: Some(Cow::from("sim_compute_pipeline")),
             push_constant_ranges: vec![],
             shader_defs: vec![],
@@ -236,15 +229,15 @@ impl Plugin for SimPlugin {
         // Extract the MeshInputData resource from the main world into the render world
         // for operation on by the compute shader and display on the sprite.
         // 让 MeshInputData 从 main world 自动同步到 render world
-        app.add_plugins(ExtractResourcePlugin::<MeshInputData>::default());
+        app.add_plugins(ExtractResourcePlugin::<PhysData>::default());
 
         let render_app = app.sub_app_mut(RenderApp);
-        // render_app.add_systems(
-        //     Render,
-        //     prepare_sim_data_bind_groups
-        //         .in_set(RenderSet::PrepareBindGroups)
-        //         .run_if(resource_added::<PhysData>), // 只在第一次出现时执行,
-        // );
+        render_app.add_systems(
+            Render,
+            prepare_sim_data_bind_groups
+                .in_set(RenderSet::PrepareBindGroups)
+                .run_if(resource_added::<PhysData>), // 只在第一次出现时执行,
+        );
         // render_app.add_systems(Render, readback_and_log_system.in_set(RenderSet::Cleanup)); // for test
 
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
@@ -263,25 +256,35 @@ struct PhysDataBindGroups {
     phys_data_bind_group: BindGroup,
 }
 
-// fn prepare_sim_data_bind_groups(
-//     mut commands: Commands,
-//     pipeline: Res<SimPipelineData>,
-//     phys_data_buffers: Res<PhysData>,
-//     render_device: Res<RenderDevice>,
-// ) {
-//     info!("prepare phys data bind groups");
-//     let pos_buffer_id = phys_data_buffers.pos.as_entire_binding();
-//     let tet_indices_buffer_id = phys_data_buffers.tet_indices.as_entire_binding();
-//
-//     let bind_group_0 = render_device.create_bind_group(
-//         None,
-//         &pipeline.layout,
-//         &BindGroupEntries::sequential((pos_buffer_id, tet_indices_buffer_id)),
-//     );
-//     commands.insert_resource(PhysDataBindGroups {
-//         phys_data_bind_group: bind_group_0,
-//     });
-// }
+fn prepare_sim_data_bind_groups(
+    mut commands: Commands,
+    pipeline: Res<SimPipelineData>,
+    phys_data: Res<PhysData>,
+    gpu_ssbos: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    render_device: Res<RenderDevice>,
+) {
+    info!("prepare phys data bind groups");
+    // 句柄 -> GPU 侧资源
+    let Some(pos_gpu) = gpu_ssbos.get(&phys_data.pos) else {
+        return;
+    };
+    let Some(tet_gpu) = gpu_ssbos.get(&phys_data.tet_indices) else {
+        return;
+    };
+    info!("prepare phys data bind groups end");
+
+    let pos_buffer_id = pos_gpu.buffer.as_entire_binding();
+    let tet_indices_buffer_id = tet_gpu.buffer.as_entire_binding();
+
+    let bind_group_0 = render_device.create_bind_group(
+        None,
+        &pipeline.layout,
+        &BindGroupEntries::sequential((pos_buffer_id, tet_indices_buffer_id)),
+    );
+    commands.insert_resource(PhysDataBindGroups {
+        phys_data_bind_group: bind_group_0,
+    });
+}
 
 struct SimNode {
     sim_state: SimState,
@@ -305,10 +308,13 @@ impl render_graph::Node for SimNode {
             SimState::LoadingMesh => {
                 match pipeline_cache.get_compute_pipeline_state(pipeline.sim_pipeline) {
                     CachedPipelineState::Ok(_) => {
+                        println!("okkk");
                         self.sim_state = SimState::UpdatePos;
                     }
+                    // If the shader hasn't loaded yet, just wait.
+                    CachedPipelineState::Err(PipelineCacheError::ShaderNotLoaded(_)) => {}
                     CachedPipelineState::Err(err) => {
-                        panic!("Initializing assets/{SHADER_ASSET_PATH}:\n{err}")
+                        panic!("Initializing assets/{ARAP_SHADER_ASSET_PATH:?}:\n{err}")
                     }
                     _ => {}
                 }
