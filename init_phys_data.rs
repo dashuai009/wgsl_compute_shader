@@ -35,10 +35,6 @@ use std::borrow::Cow;
 const VERTEX_SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
 const ARAP_SHADER_ASSET_PATH: &str = "shaders/arap.wgsl";
 
-const DISPLAY_FACTOR: u32 = 4;
-
-const SIZE: (u32, u32) = (1280 / DISPLAY_FACTOR, 720 / DISPLAY_FACTOR);
-const WORKGROUP_SIZE: u32 = 8;
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct PhysData {
@@ -48,6 +44,29 @@ pub struct PhysData {
     pub tet_size: u32,
 }
 
+
+impl PhysData {
+
+    fn new(positions: Vec<[f32; 3]>, tet_indices: Vec<u32>,
+           mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,) -> Self {
+        let points_size = positions.len() as u32;
+        let tet_size = tet_indices.len() as u32;
+        let pos_buffer = buffers.add(ShaderStorageBuffer::from(
+            positions
+                .into_iter()
+                .flatten() // 自动展平 [f32; 3]
+                .collect::<Vec<_>>(),
+        ));
+
+        let tet_indices_buffer = buffers.add(ShaderStorageBuffer::from(tet_indices));
+        PhysData {
+            pos: pos_buffer.clone(),
+            tet_indices: tet_indices_buffer,
+            points_size,
+            tet_size,
+        }
+    }
+}
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct PositionData {
     // We need to ensure that the bindings of the base material and the extension do not conflict,
@@ -121,23 +140,8 @@ pub fn dump_mesh_cpu_data_system(
                     .ok()
                     .and_then(|id| asset_materials.get_mut(id.id()))
                 {
-                    let points_size = positions.len() as u32;
-                    let tet_size = indices_u32.len() as u32;
-                    let pos_buffer = buffers.add(ShaderStorageBuffer::from(
-                        positions
-                            .into_iter()
-                            .flatten() // 自动展平 [f32; 3]
-                            .collect::<Vec<_>>(),
-                    ));
 
-                    let tet_indices_buffer = buffers.add(ShaderStorageBuffer::from(indices_u32));
-
-                    let phys_data = PhysData {
-                        pos: pos_buffer.clone(),
-                        tet_indices: tet_indices_buffer,
-                        points_size,
-                        tet_size,
-                    };
+                    let phys_data = PhysData::new(positions, indices_u32,&mut buffers);
                     // Create a copy of the material and override base color
                     // If you intend on creating multiple models with the same tint, it
                     // is best to cache the handle somewhere, as having multiple materials
@@ -146,7 +150,7 @@ pub fn dump_mesh_cpu_data_system(
                     // new_material.base_color = color_override.0;
                     let extended_material = ExtendedMaterial {
                         base: new_material,
-                        extension: PositionData { pos: pos_buffer },
+                        extension: PositionData { pos: phys_data.pos.clone() },
                     };
                     // Override `MeshMaterial3d` with new material
                     commands
@@ -309,7 +313,7 @@ impl render_graph::Node for SimNode {
                 match pipeline_cache.get_compute_pipeline_state(pipeline.sim_pipeline) {
                     CachedPipelineState::Ok(_) => {
                         println!("okkk");
-                        self.sim_state = SimState::UpdatePos;
+                        self.sim_state = SimState::InitPhysData;
                     }
                     // If the shader hasn't loaded yet, just wait.
                     CachedPipelineState::Err(PipelineCacheError::ShaderNotLoaded(_)) => {}
@@ -320,7 +324,7 @@ impl render_graph::Node for SimNode {
                 }
             }
             SimState::InitPhysData => {
-                // self.sim_state = SimState::LoadingMesh;
+                self.sim_state = SimState::UpdatePos;
             }
             SimState::UpdatePos => {}
         }
@@ -335,7 +339,7 @@ impl render_graph::Node for SimNode {
         if !world.contains_resource::<PhysDataBindGroups>() {
             return Ok(());
         }
-        // let phys_data = world.resource::<PhysData>();
+        let phys_data = world.resource::<PhysData>();
         let bind_groups = world.resource::<PhysDataBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<SimPipelineData>();
@@ -361,7 +365,8 @@ impl render_graph::Node for SimNode {
                     .unwrap();
                 pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
                 pass.set_pipeline(update_pipeline);
-                // pass.dispatch_workgroups(phys_data.points_size as u32 / WORKGROUP_SIZE, phys_data.points_size as u32 / WORKGROUP_SIZE, 1);
+                let wg = 64u32;
+                pass.dispatch_workgroups((phys_data.tet_size + wg - 1) / wg, 1, 1);
             }
         }
 

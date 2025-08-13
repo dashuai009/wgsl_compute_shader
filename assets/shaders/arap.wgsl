@@ -557,25 +557,25 @@ fn arap_solve_one_tet(inp: ARAPInputs) -> ARAPOutputs {
 //     }
 // }
 
-// // ---------- Bound compute variant ----------
+// ---------- Bound compute variant ----------
 
-// // 注意：根据你的 CPU 侧布局，必要时加上 @stride(12) 等。这里假定：
-// // - pos_mid 为紧凑 vec3<f32>（12 字节递增）
-// // - pos 是 3*NV 长度的 array<atomic<u32>>，每个 f32 以位模式存储
-// // - tet_indices: array<vec4<u32>>
-// // - B_flat: array<f32>，每 9 个为一矩阵（row-major）
-// // - is_driven: array<u32> (0/1)
-// // - inv_mass: array<f32>，长度 NV
-// // - alpha, lagrange, residuals: array<f32>，长度 NT
+// 注意：根据你的 CPU 侧布局，必要时加上 @stride(12) 等。这里假定：
+// - pos_mid 为紧凑 vec3<f32>（12 字节递增）
+// - pos 是 3*NV 长度的 array<atomic<u32>>，每个 f32 以位模式存储
+// - tet_indices: array<vec4<u32>>
+// - B_flat: array<f32>，每 9 个为一矩阵（row-major）
+// - is_driven: array<u32> (0/1)
+// - inv_mass: array<f32>，长度 NV
+// - alpha, lagrange, residuals: array<f32>，长度 NT
 
-// struct Params {
-//     dt: f32,
-//     omega: f32,
-//     _pad0: vec2<f32>,   // 16B 对齐
-//     NT: u32,
-//     NV: u32,
-//     _pad1: vec2<u32>,
-// };
+struct Params {
+    dt: f32,
+    omega: f32,
+    _pad0: vec2<f32>,   // 16B 对齐
+    NT: u32,
+    NV: u32,
+    _pad1: vec2<u32>,
+};
 
 @group(0) @binding(0) var<storage, read>       is_driven   : array<u32>;
 @group(0) @binding(1) var<storage, read>       tet_indices : array<vec4<u32>>;
@@ -586,7 +586,7 @@ fn arap_solve_one_tet(inp: ARAPInputs) -> ARAPOutputs {
 @group(0) @binding(6) var<storage, read_write> residuals   : array<f32>;
 // pos as bit-pattern float buffer with atomics
 @group(0) @binding(7) var<storage, read_write> pos_bits    : array<atomic<u32>>;
-// @group(0) @binding(8) var<uniform>             params      : Params;
+@group(0) @binding(8) var<uniform>             params      : Params;
 
 fn load_mat3_row_from_flat(base: u32) -> Mat3x3Row {
     var M: Mat3x3Row;
@@ -597,17 +597,17 @@ fn load_mat3_row_from_flat(base: u32) -> Mat3x3Row {
     return M;
 }
 
-@compute @workgroup_size(128)
+@compute @workgroup_size(64, 1, 1)
 fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
-    // let t = gid.x;
-    // if (t >= params.NT) { return; }
+    let t = gid.x;
+    if (t >= params.NT) { return; }
 
-    // // indices
-    // let ids = tet_indices[t];
-    // let p0 = ids.x;
-    // let p1 = ids.y;
-    // let p2 = ids.z;
-    // let p3 = ids.w;
+    // indices
+    let ids = tet_indices[t];
+    let p0 = ids.x;
+    let p1 = ids.y;
+    let p2 = ids.z;
+    let p3 = ids.w;
 
     // // gather positions from pos_mid
     // let x0 = pos_mid[p0];
@@ -655,24 +655,24 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
     //     let base3 = p3 * 3u;
 
     //     if (drv.x == 0u) {
-    //         atomic_add_f32(&pos_bits[base0 + 0u], outp.dp0.x);
-    //         atomic_add_f32(&pos_bits[base0 + 1u], outp.dp0.y);
-    //         atomic_add_f32(&pos_bits[base0 + 2u], outp.dp0.z);
+    //         atomicAdd(&pos_bits[base0 + 0u], outp.dp0.x);
+    //         atomicAdd(&pos_bits[base0 + 1u], outp.dp0.y);
+    //         atomicAdd(&pos_bits[base0 + 2u], outp.dp0.z);
     //     }
     //     if (drv.y == 0u) {
-    //         atomic_add_f32(&pos_bits[base1 + 0u], outp.dp1.x);
-    //         atomic_add_f32(&pos_bits[base1 + 1u], outp.dp1.y);
-    //         atomic_add_f32(&pos_bits[base1 + 2u], outp.dp1.z);
+    //         atomicAdd(&pos_bits[base1 + 0u], outp.dp1.x);
+    //         atomicAdd(&pos_bits[base1 + 1u], outp.dp1.y);
+    //         atomicAdd(&pos_bits[base1 + 2u], outp.dp1.z);
     //     }
     //     if (drv.z == 0u) {
-    //         atomic_add_f32(&pos_bits[base2 + 0u], outp.dp2.x);
-    //         atomic_add_f32(&pos_bits[base2 + 1u], outp.dp2.y);
-    //         atomic_add_f32(&pos_bits[base2 + 2u], outp.dp2.z);
+    //         atomicAdd(&pos_bits[base2 + 0u], outp.dp2.x);
+    //         atomicAdd(&pos_bits[base2 + 1u], outp.dp2.y);
+    //         atomicAdd(&pos_bits[base2 + 2u], outp.dp2.z);
     //     }
     //     if (drv.w == 0u) {
-    //         atomic_add_f32(&pos_bits[base3 + 0u], outp.dp3.x);
-    //         atomic_add_f32(&pos_bits[base3 + 1u], outp.dp3.y);
-    //         atomic_add_f32(&pos_bits[base3 + 2u], outp.dp3.z);
+    //         atomicAdd(&pos_bits[base3 + 0u], outp.dp3.x);
+    //         atomicAdd(&pos_bits[base3 + 1u], outp.dp3.y);
+    //         atomicAdd(&pos_bits[base3 + 2u], outp.dp3.z);
     //     }
     // } else {
     //     // 小于阈值：只清 residual，保持 lagrange 不变（与 CUDA 一致）
