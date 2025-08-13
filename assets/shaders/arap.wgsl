@@ -1,6 +1,7 @@
 
 
 // ---------- Common types & helpers ----------
+const EPS: f32 = 1e-6;
 alias Mat3x3Row = array<f32, 9>;
 alias Grad12    = array<f32, 12>;  // 4*vec3
 // =================================== svd =========================
@@ -14,30 +15,32 @@ struct SVDResult {
 }
 
 
-// Pre-computed constants from the original code.
-// These are used in the Jacobi and Givens rotation calculations.
-let gsine_pi_over_eight : f32 = bitcast<f32>(1053028117u); // 0.38268346
-let gcosine_pi_over_eight : f32 = bitcast<f32>(1064076127u); // 0.9238795
-let gsmall_number : f32 = 1.0e-12;
-let gtiny_number : f32 = 1.0e-20;
-let gfour_gamma_squared : f32 = 5.8284273;
-
 // Helper function for a conditional swap. Replaces the XOR-swap trick.
 fn cond_swap(a: f32, b: f32, cond: bool) -> vec2<f32> {
     return vec2<f32>(select(a, b, cond), select(b, a, cond));
 }
 
+fn sqr(x: f32) -> f32 {
+    return x * x;
+}
+
 // The core SVD function, translated from the CUDA source.
 fn svd3x3(
-    in_a11: f32, in_a12: f32, in_a13: f32, 
-    in_a21: f32, in_a22: f32, in_a23: f32, 
-    in_a31: f32, in_a32: f32, in_a33: f32
+    input_A: Mat3x3Row
 ) -> SVDResult {
 
+    // Pre-computed constants from the original code.
+    // These are used in the Jacobi and Givens rotation calculations.
+    var gsine_pi_over_eight : f32 = bitcast<f32>(1053028117u); // 0.38268346
+    var gcosine_pi_over_eight : f32 = bitcast<f32>(1064076127u); // 0.9238795
+    var gsmall_number : f32 = 1.0e-12;
+    var gtiny_number : f32 = 1.0e-20;
+    var gfour_gamma_squared : f32 = 5.8284273;
+
     // Assign inputs to mutable variables
-    var a11 = in_a11; var a12 = in_a12; var a13 = in_a13;
-    var a21 = in_a21; var a22 = in_a22; var a23 = in_a23;
-    var a31 = in_a31; var a32 = in_a32; var a33 = in_a33;
+    var a11 = input_A[0]; var a12 = input_A[1]; var a13 = input_A[2];
+    var a21 = input_A[3]; var a22 = input_A[4]; var a23 = input_A[5];
+    var a31 = input_A[6]; var a32 = input_A[7]; var a33 = input_A[8];
 
     // Intermediate variables
     var tmp1: f32; var tmp2: f32; var tmp3: f32; var tmp4: f32; var tmp5: f32;
@@ -314,10 +317,10 @@ fn svd3x3(
     //###########################################################
     var u11 = 1.0; var u12 = 0.0; var u13 = 0.0;
     var u21 = 0.0; var u22 = 1.0; var u23 = 0.0;
-    var u31 = 0.0; var __u32 = 0.0; var u33 = 1.0;
+    var u31 = 0.0; var _u32 = 0.0; var u33 = 1.0;
     
     // Givens rotation 1 (zeroes a21)
-    cond = (a21*a21) >= gsmall_number;
+    var cond = (a21*a21) >= gsmall_number;
     sh = select(0.0, a21, cond);
     tmp5 = select(1.0, 0.0, a11 >= 0.0);
     ch = max(max(-a11, a11), gsmall_number);
@@ -345,7 +348,7 @@ fn svd3x3(
     tmp1 = s*a13; tmp2 = s*a23; a13 = c*a13 + tmp2; a23 = c*a23 - tmp1;
     tmp1 = s*u11; tmp2 = s*u12; u11 = c*u11 + tmp2; u12 = c*u12 - tmp1;
     tmp1 = s*u21; tmp2 = s*u22; u21 = c*u21 + tmp2; u22 = c*u22 - tmp1;
-    tmp1 = s*u31; tmp2 = s*__u32; u31 = c*u31 + tmp2; _u32 = c*_u32 - tmp1;
+    tmp1 = s*u31; tmp2 = s*_u32; u31 = c*u31 + tmp2; _u32 = c*_u32 - tmp1;
 
     // Givens rotation 2 (zeroes a31)
     cond = (a31*a31) >= gsmall_number;
@@ -411,8 +414,8 @@ fn svd3x3(
     
     // Package and return the results
     var result: SVDResult;
-    result.U = Mat3x3Row(u11, u12, u13, u21, u22, u23, u31, _u32, u33);
-    result.V = Mat3x3Row(v11, v12, v13, v21, v22, v23, v31, v32, v33);
+    result.U = array<f32, 9>(u11, u12, u13, u21, u22, u23, u31, _u32, u33);
+    result.V = array<f32, 9>(v11, v12, v13, v21, v22, v23, v31, v32, v33);
     result.S = vec3(a11, a22, a33);
     
     return result;
@@ -441,7 +444,7 @@ fn mul_row3(a: Mat3x3Row, b: Mat3x3Row) -> Mat3x3Row {
 fn compute_gradient_row_major(
     U: Mat3x3Row, S: vec3<f32>, V: Mat3x3Row, B: Mat3x3Row
 ) -> Grad12{
-
+    return array<f32, 12>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 }
 
 
@@ -472,70 +475,70 @@ struct ARAPOutputs {
 }
 
 fn arap_solve_one_tet(inp: ARAPInputs) -> ARAPOutputs {
-    // // D_s (row-major)
-    // var D_s: Mat3x3Row;
-    // D_s[0] = inp.x1.x - inp.x0.x;  D_s[1] = inp.x2.x - inp.x0.x;  D_s[2] = inp.x3.x - inp.x0.x;
-    // D_s[3] = inp.x1.y - inp.x0.y;  D_s[4] = inp.x2.y - inp.x0.y;  D_s[5] = inp.x3.y - inp.x0.y;
-    // D_s[6] = inp.x1.z - inp.x0.z;  D_s[7] = inp.x2.z - inp.x0.z;  D_s[8] = inp.x3.z - inp.x0.z;
+    // D_s (row-major)
+    var D_s: Mat3x3Row;
+    D_s[0] = inp.x1.x - inp.x0.x;  D_s[1] = inp.x2.x - inp.x0.x;  D_s[2] = inp.x3.x - inp.x0.x;
+    D_s[3] = inp.x1.y - inp.x0.y;  D_s[4] = inp.x2.y - inp.x0.y;  D_s[5] = inp.x3.y - inp.x0.y;
+    D_s[6] = inp.x1.z - inp.x0.z;  D_s[7] = inp.x2.z - inp.x0.z;  D_s[8] = inp.x3.z - inp.x0.z;
 
-    // // F = D_s * B
-    // let F = mul_row3(D_s, inp.B);
+    // F = D_s * B
+    let F = mul_row3(D_s, inp.B);
 
-    // // SVD
-    // let svd = svd3x3(F);
-    // let S   = svd.S;
+    // SVD
+    let svd = svd3x3(F);
+    let S   = svd.S;
 
-    // // constraint = ||S - (1,1,1)||
-    // let c = sqrt(sqr(S.x - 1.0) + sqr(S.y - 1.0) + sqr(S.z - 1.0));
+    // constraint = ||S - (1,1,1)||
+    let c = sqrt(sqr(S.x - 1.0) + sqr(S.y - 1.0) + sqr(S.z - 1.0));
 
-    // if (c < EPS) {
-    //     return ARAPOutputs(
-    //         vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0),
-    //         inp.lagrange, 0.0, true
-    //     );
-    // }
-
-    // // gradient
-    // let gradC = compute_gradient_row_major(svd.U, S, svd.V, inp.B);
-    // let g0 = vec3<f32>(gradC[0],  gradC[1],  gradC[2]);
-    // let g1 = vec3<f32>(gradC[3],  gradC[4],  gradC[5]);
-    // let g2 = vec3<f32>(gradC[6],  gradC[7],  gradC[8]);
-    // let g3 = vec3<f32>(gradC[9],  gradC[10], gradC[11]);
-
-    // // denominator
-    // let denom =
-    //       inp.inv_mass.x * vec3_norm2(g0)
-    //     + inp.inv_mass.y * vec3_norm2(g1)
-    //     + inp.inv_mass.z * vec3_norm2(g2)
-    //     + inp.inv_mass.w * vec3_norm2(g3);
-
-    // let alpha_tilde = inp.alpha / (inp.dt * inp.dt);
-    // let dlambda = -(c + alpha_tilde * inp.lagrange) / (denom + alpha_tilde);
-    // let lambda_new = inp.lagrange + dlambda;
-
-    // // 推荐让调用者根据 is_driven 决定是否写回；这里仍给出完整贡献
-    // let dp0 = inp.omega * inp.inv_mass.x * dlambda * g0;
-    // let dp1 = inp.omega * inp.inv_mass.y * dlambda * g1;
-    // let dp2 = inp.omega * inp.inv_mass.z * dlambda * g2;
-    // let dp3 = inp.omega * inp.inv_mass.w * dlambda * g3;
-
-    // let res = abs(c + alpha_tilde * lambda_new);
-
-    // return ARAPOutputs(dp0, dp1, dp2, dp3, lambda_new, res, false);
-}
-
-// ---------- Atomic float add via CAS on atomic<u32> ----------
-fn atomic_add_f32(p: ptr<storage, atomic<u32>, read_write>, val: f32) {
-    var old_bits: u32 = atomicLoad(p);
-    loop {
-        let old_f = bitcast<f32>(old_bits);
-        let new_f = old_f + val;
-        let new_bits = bitcast<u32>(new_f);
-        let r = atomicCompareExchangeWeak(p, old_bits, new_bits);
-        if (r.exchanged) { break; }
-        old_bits = r.old_value;
+    if (c < EPS) {
+        return ARAPOutputs(
+            vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0),
+            inp.lagrange, 0.0, true
+        );
     }
+
+    // gradient
+    let gradC = compute_gradient_row_major(svd.U, S, svd.V, inp.B);
+    let g0 = vec3<f32>(gradC[0],  gradC[1],  gradC[2]);
+    let g1 = vec3<f32>(gradC[3],  gradC[4],  gradC[5]);
+    let g2 = vec3<f32>(gradC[6],  gradC[7],  gradC[8]);
+    let g3 = vec3<f32>(gradC[9],  gradC[10], gradC[11]);
+
+    // denominator
+    let denom =
+          inp.inv_mass.x * vec3_norm2(g0)
+        + inp.inv_mass.y * vec3_norm2(g1)
+        + inp.inv_mass.z * vec3_norm2(g2)
+        + inp.inv_mass.w * vec3_norm2(g3);
+
+    let alpha_tilde = inp.alpha / (inp.dt * inp.dt);
+    let dlambda = -(c + alpha_tilde * inp.lagrange) / (denom + alpha_tilde);
+    let lambda_new = inp.lagrange + dlambda;
+
+    // 推荐让调用者根据 is_driven 决定是否写回；这里仍给出完整贡献
+    let dp0 = inp.omega * inp.inv_mass.x * dlambda * g0;
+    let dp1 = inp.omega * inp.inv_mass.y * dlambda * g1;
+    let dp2 = inp.omega * inp.inv_mass.z * dlambda * g2;
+    let dp3 = inp.omega * inp.inv_mass.w * dlambda * g3;
+
+    let res = abs(c + alpha_tilde * lambda_new);
+
+    return ARAPOutputs(dp0, dp1, dp2, dp3, lambda_new, res, false);
 }
+
+// // ---------- Atomic float add via CAS on atomic<u32> ----------
+// fn atomic_add_f32(p: ptr<storage, atomic<u32>, read_write>, val: f32) {
+//     var old_bits: u32 = atomicLoad(p);
+//     loop {
+//         let old_f = bitcast<f32>(old_bits);
+//         let new_f = old_f + val;
+//         let new_bits = bitcast<u32>(new_f);
+//         let r = atomicCompareExchangeWeak(p, old_bits, new_bits);
+//         if (r.exchanged) { break; }
+//         old_bits = r.old_value;
+//     }
+// }
 
 // // ---------- Bound compute variant ----------
 
@@ -679,18 +682,14 @@ fn svd_test(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // Unpack input matrix A
     let A = input_matrices[idx];
-    let a11 = A.r1.x; let a12 = A.r1.y; let a13 = A.r1.z;
-    let a21 = A.r2.x; let a22 = A.r2.y; let a23 = A.r2.z;
-    let a31 = A.r3.x; let a32 = A.r3.y; let a33 = A.r3.z;
+    let a11 = A[0]; let a12 = A[1]; let a13 = A[2];
+    let a21 = A[3]; let a22 = A[4]; let a23 = A[5];
+    let a31 = A[6]; let a32 = A[7]; let a33 = A[8];
+
 
     // Perform the SVD calculation
-    let result = svd3x3(
-        a11, a12, a13, 
-        a21, a22, a23, 
-        a31, a32, a33
-    );
+    let result = svd3x3(A);
     
     // Store the result
     output_results[idx] = result;

@@ -15,7 +15,7 @@ struct SvdResultStd430 {
     _pad2: [f32; 3],
 }
 
-const WGSL: &str = include_str!("../assets/shaders/svd.wgsl");
+const WGSL: &str = include_str!("../assets/shaders/arap.wgsl");
 
 fn m3_from_row(arr: &[f32; 9]) -> Matrix3<f32> {
     Matrix3::from_row_slice(arr)
@@ -135,6 +135,11 @@ async fn run() {
         label: Some("empty"),
         entries: &[],
     });
+    let empty_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("empty_bg"),
+        layout: &empty_bgl,
+        entries: &[],
+    });
     let data_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("data_bgl"),
         entries: &[
@@ -142,7 +147,7 @@ async fn run() {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -201,6 +206,9 @@ async fn run() {
             timestamp_writes: None,
         });
         pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &empty_bg, &[]);
+        pass.set_bind_group(1, &empty_bg, &[]);
+        pass.set_bind_group(2, &empty_bg, &[]);
         pass.set_bind_group(3, &bind_group, &[]);
         let wg = 64u32;
         pass.dispatch_workgroups((n + wg - 1) / wg, 1, 1);
@@ -211,6 +219,7 @@ async fn run() {
     // ---------- 读回 ----------
     let slice = readback_buf.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
     let data = slice.get_mapped_range();
     let gpu_results: &[SvdResultStd430] = bytemuck::cast_slice(&data);
 
