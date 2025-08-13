@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .add_plugins(MaterialPlugin::<
                         ExtendedMaterial<StandardMaterial, init_phys_data::PositionData>
                     >::default())
-                    .add_plugins(SimPlugin)
+                    // .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
                     .add_systems(Update, animate_camera)
@@ -185,20 +185,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let models = slint::VecModel::from_slice(&[
         GLTFModel {
-            name: "Untitled".into(),
-            path: "Untitled.glb".into(),
-            center: Vec3::new(6.0, 8.0, 8.0),
-        },
-        GLTFModel {
-            name: "Damaged Helmet".into(),
-            path: "DamagedHelmet.glb".into(),
-            center: Vec3::new(3.0, 4.0, 4.0),
-        },
-        GLTFModel {
             name: "Box".into(),
-            path: "Box.glb".into(),
+            path: "box_h.glb".into(),
             center: Vec3::new(6.0, 8.0, 8.0),
         },
+        GLTFModel {
+            name: "bunny".into(),
+            path: "bunny_h.glb".into(),
+            center: Vec3::new(6.0, 8.0, 8.0),
+        },
+        // GLTFModel {
+        //     name: "Untitled".into(),
+        //     path: "Untitled.glb".into(),
+        //     center: Vec3::new(6.0, 8.0, 8.0),
+        // },
+        // GLTFModel {
+        //     name: "Damaged Helmet".into(),
+        //     path: "DamagedHelmet.glb".into(),
+        //     center: Vec3::new(3.0, 4.0, 4.0),
+        // },
+        // GLTFModel {
+        //     name: "Box".into(),
+        //     path: "Box.glb".into(),
+        //     center: Vec3::new(6.0, 8.0, 8.0),
+        // },
         // GLTFModel {
         //     name: "Box".into(),
         //     path: "Models/Box/glTF-Binary/Box.glb".into(),
@@ -209,11 +219,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         //     path: "Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb".into(),
         //     center: Vec3::new(3.0, 4.0, 4.0),
         // },
-        GLTFModel {
-            name: "Fish".into(),
-            path: "BarramundiFish.glb".into(),
-            center: Vec3::new(3.0, 2.0, 4.0),
-        },
+        // GLTFModel {
+        //     name: "Fish".into(),
+        //     path: "BarramundiFish.glb".into(),
+        //     center: Vec3::new(3.0, 2.0, 4.0),
+        // },
     ]);
 
     app_window

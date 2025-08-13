@@ -35,7 +35,6 @@ use std::borrow::Cow;
 const VERTEX_SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
 const ARAP_SHADER_ASSET_PATH: &str = "shaders/arap.wgsl";
 
-
 #[derive(Resource, Clone, ExtractResource)]
 pub struct PhysData {
     pub pos: Handle<ShaderStorageBuffer>,
@@ -44,11 +43,12 @@ pub struct PhysData {
     pub tet_size: u32,
 }
 
-
 impl PhysData {
-
-    fn new(positions: Vec<[f32; 3]>, tet_indices: Vec<u32>,
-           mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,) -> Self {
+    fn new(
+        positions: Vec<[f32; 3]>,
+        tet_indices: Vec<u32>,
+        mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
+    ) -> Self {
         let points_size = positions.len() as u32;
         let tet_size = tet_indices.len() as u32;
         let pos_buffer = buffers.add(ShaderStorageBuffer::from(
@@ -134,33 +134,39 @@ pub fn dump_mesh_cpu_data_system(
                     mesh.primitive_topology()
                 );
 
-                // Get the material of the descendant
-                if let Some(material) = mesh_materials
+                // Get the material of the descendant or use the default one
+                let material : StandardMaterial = mesh_materials
                     .get(e)
                     .ok()
-                    .and_then(|id| asset_materials.get_mut(id.id()))
-                {
+                    .and_then(|id| asset_materials.get(id.id()))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        // If the material is not found, create a new one with the default color
+                        let new_material = StandardMaterial::from(Color::WHITE);
+                        // asset_materials.add(new_material)
+                        new_material
+                    });
 
-                    let phys_data = PhysData::new(positions, indices_u32,&mut buffers);
-                    // Create a copy of the material and override base color
-                    // If you intend on creating multiple models with the same tint, it
-                    // is best to cache the handle somewhere, as having multiple materials
-                    // that are identical is expensive
-                    let new_material = material.clone();
-                    // new_material.base_color = color_override.0;
-                    let extended_material = ExtendedMaterial {
-                        base: new_material,
-                        extension: PositionData { pos: phys_data.pos.clone() },
-                    };
-                    // Override `MeshMaterial3d` with new material
-                    commands
-                        .entity(e)
-                        .remove::<MeshMaterial3d<StandardMaterial>>()
-                        .insert(MeshMaterial3d(ext_materials.add(extended_material)))
-                        .log_components();
+                let phys_data = PhysData::new(positions, indices_u32, &mut buffers);
+                // Create a copy of the material and override base color
+                // If you intend on creating multiple models with the same tint, it
+                // is best to cache the handle somewhere, as having multiple materials
+                // that are identical is expensive
+                // new_material.base_color = color_override.0;
+                let extended_material = ExtendedMaterial {
+                    base: material,
+                    extension: PositionData {
+                        pos: phys_data.pos.clone(),
+                    },
+                };
+                // Override `MeshMaterial3d` with new material
+                commands
+                    .entity(e)
+                    .remove::<MeshMaterial3d<StandardMaterial>>()
+                    .insert(MeshMaterial3d(ext_materials.add(extended_material)))
+                    .log_components();
 
-                    commands.insert_resource(phys_data);
-                }
+                commands.insert_resource(phys_data);
             }
         }
     }
