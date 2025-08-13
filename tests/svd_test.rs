@@ -10,9 +10,7 @@ struct SvdResultStd430 {
     U: [f32; 9],
     _pad0: [f32; 3],
     S: [f32; 3],
-    _pad1: f32,
     V: [f32; 9],
-    _pad2: [f32; 3],
 }
 
 const WGSL: &str = include_str!("../assets/shaders/arap.wgsl");
@@ -230,9 +228,11 @@ async fn run() {
 
     for (i, (a_row, g)) in inputs.iter().zip(gpu_results.iter()).enumerate() {
         let a = m3_from_row(a_row);
+        println!("gpu_results = {:?}", gpu_results[i]);
 
         // CPU 基准
         let svd = nalgebra::linalg::SVD::new(a.clone(), true, true);
+        println!("svd_nalgebra = {:?}", svd);
         let mut u_cpu = svd.u.as_ref().unwrap().clone_owned();
         let s_cpu = svd.singular_values.clone_owned();
         let mut v_cpu = svd.v_t.as_ref().unwrap().transpose();

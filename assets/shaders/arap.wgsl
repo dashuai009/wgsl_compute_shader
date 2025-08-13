@@ -414,11 +414,24 @@ fn svd3x3(
     
     // Package and return the results
     var result: SVDResult;
-    result.U = array<f32, 9>(u11, u12, u13, u21, u22, u23, u31, _u32, u33);
-    result.V = array<f32, 9>(v11, v12, v13, v21, v22, v23, v31, v32, v33);
-    result.S = vec3(a11, a22, a33);
-    
+
+    // U
+    result.U[0] = u11; result.U[1] = u12; result.U[2] = u13;
+    result.U[3] = u21; result.U[4] = u22; result.U[5] = u23;
+    result.U[6] = u31; result.U[7] = _u32; result.U[8] = u33;
+
+    // V
+    result.V[0] = v11; result.V[1] = v12; result.V[2] = v13;
+    result.V[3] = v21; result.V[4] = v22; result.V[5] = v23;
+    result.V[6] = v31; result.V[7] = v32; result.V[8] = v33;
+
+    // S（向量整体赋值通常也可，但为保险分量写）
+    result.S.x = a11;
+    result.S.y = a22;
+    result.S.z = a33;
+
     return result;
+
 }
 
 
@@ -444,7 +457,11 @@ fn mul_row3(a: Mat3x3Row, b: Mat3x3Row) -> Mat3x3Row {
 fn compute_gradient_row_major(
     U: Mat3x3Row, S: vec3<f32>, V: Mat3x3Row, B: Mat3x3Row
 ) -> Grad12{
-    return array<f32, 12>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    var res: Grad12;
+    for(var k: u32 = 0u; k < 12u; k++) {
+        res[k] = 0; //array<f32, 12>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    return res;
 }
 
 
