@@ -411,12 +411,8 @@ fn svd3x3(
     
     // Package and return the results
     var result: SVDResult;
-    result.U.r1 = vec3(u11, u12, u13);
-    result.U.r2 = vec3(u21, u22, u23);
-    result.U.r3 = vec3(u31, _u32, u33);
-    result.V.r1 = vec3(v11, v12, v13);
-    result.V.r2 = vec3(v21, v22, v23);
-    result.V.r3 = vec3(v31, v32, v33);
+    result.U = Mat3x3Row(u11, u12, u13, u21, u22, u23, u31, _u32, u33);
+    result.V = Mat3x3Row(v11, v12, v13, v21, v22, v23, v31, v32, v33);
     result.S = vec3(a11, a22, a33);
     
     return result;

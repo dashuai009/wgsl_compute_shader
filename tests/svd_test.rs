@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use nalgebra::{Matrix3, Vector3};
-use std::borrow::Cow;
+use slint::wgpu_24::wgpu;
+use std::{borrow::Cow, default};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -14,45 +15,7 @@ struct SvdResultStd430 {
     _pad2: [f32; 3],
 }
 
-const WGSL: &str = r#"
-// ---------- Common types & helpers ----------
-alias Mat3x3Row = array<f32, 9>;
-alias Grad12    = array<f32, 12>;
-
-// SVD result
-struct SVDResult {
-    U: Mat3x3Row,
-    S: vec3<f32>,
-    V: Mat3x3Row,
-}
-
-// TODO: 用你的真实 SVD 替换这里
-fn svd3x3(a11:f32,a12:f32,a13:f32,a21:f32,a22:f32,a23:f32,a31:f32,a32:f32,a33:f32) -> SVDResult {
-    var out: SVDResult;
-    out.U = array<f32,9>(1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0);
-    out.S = vec3<f32>(1.0, 1.0, 1.0);
-    out.V = array<f32,9>(1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0);
-    return out;
-}
-
-@group(3) @binding(0) var<storage, read> input_matrices: array<Mat3x3Row>;
-@group(3) @binding(1) var<storage, read_write> output_results: array<SVDResult>;
-
-@compute @workgroup_size(64, 1, 1)
-fn svd_test(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
-    let n = arrayLength(&input_matrices);
-    if (idx >= n) { return; }
-
-    let A = input_matrices[idx];
-    let a11 = A[0]; let a12 = A[1]; let a13 = A[2];
-    let a21 = A[3]; let a22 = A[4]; let a23 = A[5];
-    let a31 = A[6]; let a32 = A[7]; let a33 = A[8];
-
-    let result = svd3x3(a11,a12,a13, a21,a22,a23, a31,a32,a33);
-    output_results[idx] = result;
-}
-"#;
+const WGSL: &str = include_str!("../assets/shaders/svd.wgsl");
 
 fn m3_from_row(arr: &[f32; 9]) -> Matrix3<f32> {
     Matrix3::from_row_slice(arr)
@@ -108,10 +71,6 @@ fn recon_rel_err(a: &Matrix3<f32>, u: &Matrix3<f32>, s: &Vector3<f32>, v: &Matri
     (a - a_hat).norm() / a.norm().max(1e-12)
 }
 
-fn main() {
-    pollster::block_on(run());
-}
-
 async fn run() {
     // ---------- wgpu 初始化 ----------
     let instance = wgpu::Instance::default();
@@ -129,6 +88,7 @@ async fn run() {
                 label: Some("Device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults(),
+                ..Default::default()
             },
             None,
         )
@@ -182,7 +142,7 @@ async fn run() {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::ReadOnlyStorage,
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -213,7 +173,9 @@ async fn run() {
         label: Some("svd_pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
-        entry_point: "svd_test",
+        entry_point: Some("svd_test"),
+        compilation_options: Default::default(),
+        cache: None,
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bg"),
@@ -248,7 +210,7 @@ async fn run() {
 
     // ---------- 读回 ----------
     let slice = readback_buf.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {}).await.unwrap();
+    slice.map_async(wgpu::MapMode::Read, |_| {});
     let data = slice.get_mapped_range();
     let gpu_results: &[SvdResultStd430] = bytemuck::cast_slice(&data);
 
@@ -312,4 +274,14 @@ async fn run() {
     readback_buf.unmap();
 
     println!("All cases passed within tolerances.");
+}
+
+#[cfg(test)]
+mod test {
+    use crate::run;
+
+    #[test]
+    fn test_svd() {
+        pollster::block_on(run());
+    }
 }
