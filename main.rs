@@ -10,6 +10,7 @@ use crate::init_phys_data::SimPlugin;
 mod slint_bevy_adapter;
 mod web_asset;
 mod init_phys_data;
+mod gltf_extra_attribute;
 
 slint::slint! {
 import { Palette, Button, ComboBox, GroupBox, GridBox, Slider, HorizontalBox, VerticalBox, ProgressIndicator } from "std-widgets.slint";

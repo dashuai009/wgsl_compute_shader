@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use slint::wgpu_24::wgpu;
 
+use crate::gltf_extra_attribute::{ATTR_TET_INDICES, ATTR_TET_POS};
+use bevy::gltf::GltfPlugin;
 use bevy::{
     prelude::*,
     render::{
@@ -46,7 +48,10 @@ pub async fn run_bevy_app_with_slint(
     bevy_app_pre_default_plugins_callback: impl FnOnce(&mut App) + Send + 'static,
     bevy_main: impl FnOnce(App) + Send + 'static,
 ) -> Result<
-    (smol::channel::Receiver<wgpu::Texture>, smol::channel::Sender<ControlMessage>),
+    (
+        smol::channel::Receiver<wgpu::Texture>,
+        smol::channel::Sender<ControlMessage>,
+    ),
     slint::PlatformError,
 > {
     let backends = wgpu::Backends::from_env().unwrap_or_default();
@@ -57,7 +62,9 @@ pub async fn run_bevy_app_with_slint(
         backends,
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
         backend_options: wgpu::BackendOptions {
-            dx12: wgpu::Dx12BackendOptions { shader_compiler: dx12_shader_compiler },
+            dx12: wgpu::Dx12BackendOptions {
+                shader_compiler: dx12_shader_compiler,
+            },
             gl: wgpu::GlBackendOptions { gles_minor_version },
         },
     })
@@ -90,7 +97,11 @@ pub async fn run_bevy_app_with_slint(
     let create_texture = move |label, width, height| {
         wgpu_device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -179,18 +190,26 @@ pub async fn run_bevy_app_with_slint(
         app.insert_resource(BackBuffer(None));
         bevy_app_pre_default_plugins_callback(&mut app);
         app.add_plugins(
-            DefaultPlugins.set(ImagePlugin::default_nearest()).set(RenderPlugin {
-                render_creation: RenderCreation::manual(
-                    render_device,
-                    render_queue,
-                    adapter_info,
-                    adapter,
-                    bevy::render::renderer::RenderInstance(Arc::new(
-                        bevy::render::renderer::WgpuWrapper::new(instance),
-                    )),
-                ),
-                ..default()
-            }), //.disable::<bevy::winit::WinitPlugin>(),
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::manual(
+                        render_device,
+                        render_queue,
+                        adapter_info,
+                        adapter,
+                        bevy::render::renderer::RenderInstance(Arc::new(
+                            bevy::render::renderer::WgpuWrapper::new(instance),
+                        )),
+                    ),
+                    ..default()
+                })
+                .set(
+                    // 关键：把 glTF 里的 "_MY_ATTR" 注册成 Bevy 里的 ATTR_MY
+                    GltfPlugin::default()
+                        .add_custom_vertex_attribute("pos", ATTR_TET_POS)
+                        .add_custom_vertex_attribute("tet_indices", ATTR_TET_INDICES),
+                ), //.disable::<bevy::winit::WinitPlugin>(),
         );
         app.add_plugins(SlintRenderToTexturePlugin(bevy_front_buffer_sender));
         app.add_plugins(ExtractResourcePlugin::<BackBuffer>::default());
@@ -199,13 +218,19 @@ pub async fn run_bevy_app_with_slint(
     });
 
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture { texture: back_buffer })
+        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+            texture: back_buffer,
+        })
         .unwrap();
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture { texture: inflight_buffer })
+        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+            texture: inflight_buffer,
+        })
         .unwrap();
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture { texture: front_buffer })
+        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+            texture: front_buffer,
+        })
         .unwrap();
 
     Ok((bevy_front_buffer_receiver, control_message_sender))

@@ -30,6 +30,8 @@ use bytemuck::cast_slice;
 use slint::wgpu_24::wgpu;
 use slint::{Model, SharedString};
 use std::borrow::Cow;
+use super::gltf_extra_attribute::{ATTR_TET_POS, ATTR_TET_INDICES};
+
 
 /// This example uses a shader source file from the assets subdirectory
 const VERTEX_SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
@@ -115,6 +117,9 @@ pub fn dump_mesh_cpu_data_system(
                         Vec::new()
                     }
                 };
+                
+                let pos = mesh.attribute(ATTR_TET_POS);
+                warn!("Entity {:?}: {:?}", e, pos);
 
                 // ---------- 索引 ----------
                 // 可能是 None（非索引绘制）、U16 或 U32
