@@ -1,16 +1,17 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: MIT
 
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 
-use crate::init_phys_data::SimPlugin;
+use crate::init_phys_data::{SimPlugin, TetData};
 
+mod init_phys_data;
 mod slint_bevy_adapter;
 mod web_asset;
-mod init_phys_data;
-mod gltf_extra_attribute;
+
+mod bin_asset_loader;
 
 slint::slint! {
 import { Palette, Button, ComboBox, GroupBox, GridBox, Slider, HorizontalBox, VerticalBox, ProgressIndicator } from "std-widgets.slint";
@@ -115,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //         .into(),
                     // ))
                     .add_plugins(MaterialPlugin::<
-                        ExtendedMaterial<StandardMaterial, init_phys_data::PositionData>
+                        ExtendedMaterial<StandardMaterial, init_phys_data::PositionData>,
                     >::default())
                     // .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
@@ -130,44 +131,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_window = AppWindow::new().unwrap();
     let app2 = app_window.as_weak();
 
-    app_window.window().set_rendering_notifier(move |state, _| {
-        let slint::RenderingState::BeforeRendering = state else { return };
-        let Some(app) = app2.upgrade() else { return };
-        app.window().request_redraw();
-        let Ok(new_texture) = new_texture_receiver.try_recv() else { return };
-        if let Some(old_texture) = app.get_texture().to_wgpu_24_texture() {
-            let control_message_sender = control_message_sender.clone();
-            slint::spawn_local(async move {
-                control_message_sender
-                    .send(slint_bevy_adapter::ControlMessage::ReleaseFrontBufferTexture {
-                        texture: old_texture,
-                    })
-                    .await
-                    .unwrap();
-            })
-            .unwrap();
-        }
+    app_window
+        .window()
+        .set_rendering_notifier(move |state, _| {
+            let slint::RenderingState::BeforeRendering = state else {
+                return;
+            };
+            let Some(app) = app2.upgrade() else { return };
+            app.window().request_redraw();
+            let Ok(new_texture) = new_texture_receiver.try_recv() else {
+                return;
+            };
+            if let Some(old_texture) = app.get_texture().to_wgpu_24_texture() {
+                let control_message_sender = control_message_sender.clone();
+                slint::spawn_local(async move {
+                    control_message_sender
+                        .send(
+                            slint_bevy_adapter::ControlMessage::ReleaseFrontBufferTexture {
+                                texture: old_texture,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                })
+                .unwrap();
+            }
 
-        let requested_width = app.get_requested_texture_width().round() as u32;
-        let requested_height = app.get_requested_texture_height().round() as u32;
-        if requested_width > 0 && requested_height > 0 {
-            let control_message_sender = control_message_sender.clone();
-            slint::spawn_local(async move {
-                control_message_sender
-                    .send(slint_bevy_adapter::ControlMessage::ResizeBuffers {
-                        width: requested_width,
-                        height: requested_height,
-                    })
-                    .await
-                    .unwrap();
-            })
-            .unwrap();
-        }
+            let requested_width = app.get_requested_texture_width().round() as u32;
+            let requested_height = app.get_requested_texture_height().round() as u32;
+            if requested_width > 0 && requested_height > 0 {
+                let control_message_sender = control_message_sender.clone();
+                slint::spawn_local(async move {
+                    control_message_sender
+                        .send(slint_bevy_adapter::ControlMessage::ResizeBuffers {
+                            width: requested_width,
+                            height: requested_height,
+                        })
+                        .await
+                        .unwrap();
+                })
+                .unwrap();
+            }
 
-        if let Ok(image) = new_texture.try_into() {
-            app.set_texture(image);
-        }
-    })?;
+            if let Ok(image) = new_texture.try_into() {
+                app.set_texture(image);
+            }
+        })?;
 
     let app_weak = app_window.as_weak();
 
@@ -176,7 +185,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Ok((url, progress)) = download_progress_receiver.recv().await else {
                 break;
             };
-            let Some(app) = app_weak.upgrade() else { return };
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
             app.set_download_url(url);
             app.set_download_progress(progress * 100.);
             app.set_show_loading_screen(progress < 1.0);
@@ -185,14 +196,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
 
     let models = slint::VecModel::from_slice(&[
-        GLTFModel {
-            name: "Box".into(),
-            path: "box_h.glb".into(),
-            center: Vec3::new(6.0, 8.0, 8.0),
-        },
+        // GLTFModel {
+        //     name: "Box".into(),
+        //     path: "output.gltf".into(),
+        //     center: Vec3::new(6.0, 8.0, 8.0),
+        // },
         GLTFModel {
             name: "bunny".into(),
-            path: "bunny_h.glb".into(),
+            path: "models/bunny/".into(),
             center: Vec3::new(6.0, 8.0, 8.0),
         },
         // GLTFModel {
@@ -227,10 +238,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // },
     ]);
 
-    app_window
-        .set_available_models(slint::ModelRc::new(models.clone().map(|model| model.name.clone())));
+    app_window.set_available_models(slint::ModelRc::new(
+        models.clone().map(|model| model.name.clone()),
+    ));
 
-    model_selector_sender.send_blocking(models.row_data(0).unwrap()).unwrap();
+    model_selector_sender
+        .send_blocking(models.row_data(0).unwrap())
+        .unwrap();
 
     app_window.on_load_model(move |index| {
         let model = models.row_data(index as usize).unwrap();
@@ -249,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Clone)]
 struct GLTFModel {
     name: SharedString,
-    path: SharedString,
+    path: SharedString, // directory ，end with "/"
     center: Vec3,
 }
 
@@ -260,11 +274,17 @@ struct CameraPos(Vec3);
 struct ModelBasePath(String);
 
 fn setup(mut commands: Commands, camera: Res<CameraPos>) {
-    commands.spawn(DirectionalLight { illuminance: 100_000.0, ..default() });
+    commands.spawn(DirectionalLight {
+        illuminance: 100_000.0,
+        ..default()
+    });
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(camera.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
-        PointLight { color: Color::linear_rgb(0.5, 0., 0.), ..default() },
+        PointLight {
+            color: Color::linear_rgb(0.5, 0., 0.),
+            ..default()
+        },
     ));
 
     /*
@@ -279,7 +299,6 @@ fn setup(mut commands: Commands, camera: Res<CameraPos>) {
     */
 }
 
-
 fn reload_model_from_channel(
     receiver: smol::channel::Receiver<GLTFModel>,
 ) -> impl FnMut(
@@ -288,44 +307,41 @@ fn reload_model_from_channel(
     Query<Entity, With<SceneRoot>>,
     ResMut<CameraPos>,
     Res<ModelBasePath>,
-    ResMut<Assets<Mesh>>,    
+    ResMut<Assets<Mesh>>,
     ResMut<Assets<StandardMaterial>>,
 ) {
-    move |mut commands, asset_server, loaded_bundles, mut camera, base_path, mut meshes, mut std_mats| {
+    move |mut commands,
+          asset_server,
+          loaded_bundles,
+          mut camera,
+          base_path,
+          mut meshes,
+          mut std_mats| {
         let Ok(new_model) = receiver.try_recv() else {
             return;
         };
         for loaded_bundle in loaded_bundles.iter() {
             commands.entity(loaded_bundle).despawn();
         }
-        // let mesh = asset_server.load(
-        //          GltfAssetLabel::Primitive {
-        //             mesh: 0,
-        //             primitive: 0,
-        //         }.from_asset(format!("{}{}", base_path.0, new_model.path)),
-        //     );
-        let mat: Handle<StandardMaterial> = asset_server.load(
-            GltfAssetLabel::Material {
-                index: 0,
-                is_scale_inverted: false,
-            }.from_asset(format!("{}{}", base_path.0, new_model.path)),
-        );
 
-        // // let std_mat = std_mats.add(mat);
-        // let xx = std_mats.get(mat.id()).unwrap().clone();
-
-        // // let extended_material = ExtendedMaterial {
-        // //     base: xx,
-        // //     extension: MyExtension { quantize_steps: 10 },
-        // // };
-
-        // // let handle = ext_materials.add(extended_material);
-
-        commands.spawn(SceneRoot(
-            //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),
-            asset_server.load(
-                GltfAssetLabel::Scene(0).from_asset(format!("{}{}", base_path.0, new_model.path)),
+        commands.spawn((
+            SceneRoot(
+                //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),
+                asset_server.load(
+                    GltfAssetLabel::Scene(0)
+                        .from_asset(format!("{}{}{}.glb", base_path.0, new_model.path, new_model.name)),
+                ),
             ),
+            TetData {
+                tet_indices: asset_server.load(format!(
+                    "{}{}{}_tet_indices.vec4u32bin",
+                    base_path.0, new_model.path, new_model.name
+                )),
+                positions: asset_server.load(format!(
+                    "{}{}{}_positions.vec3f32bin",
+                    base_path.0, new_model.path, new_model.name
+                )),
+            },
         ));
         // commands.spawn((
         //     //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),

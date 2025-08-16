@@ -30,12 +30,19 @@ use bytemuck::cast_slice;
 use slint::wgpu_24::wgpu;
 use slint::{Model, SharedString};
 use std::borrow::Cow;
-use super::gltf_extra_attribute::{ATTR_TET_POS, ATTR_TET_INDICES};
+use bevy::ecs::error::panic;
+use crate::bin_asset_loader::PodArrayAsset;
 
 
 /// This example uses a shader source file from the assets subdirectory
 const VERTEX_SHADER_ASSET_PATH: &str = "shaders/sim_pipeline.wgsl";
 const ARAP_SHADER_ASSET_PATH: &str = "shaders/arap.wgsl";
+
+#[derive(Component)]
+pub struct TetData {
+    pub tet_indices: Handle<PodArrayAsset<[u32; 4]>>,
+    pub positions: Handle<PodArrayAsset<[f32; 3]>>,
+}
 
 #[derive(Resource, Clone, ExtractResource)]
 pub struct PhysData {
@@ -47,8 +54,8 @@ pub struct PhysData {
 
 impl PhysData {
     fn new(
-        positions: Vec<[f32; 3]>,
-        tet_indices: Vec<u32>,
+        positions: &[[f32; 3]],
+        tet_indices: &[[u32;4]],
         mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
     ) -> Self {
         let points_size = positions.len() as u32;
@@ -89,7 +96,10 @@ pub fn dump_mesh_cpu_data_system(
     trigger: Trigger<SceneInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
-    scene_roots: Query<&SceneRoot>,
+    scene_roots: Query<(&SceneRoot, &TetData)>,
+    tet_q: Query<&TetData>,
+    tet_indices_assets: Res<Assets<PodArrayAsset<[u32; 4]>>>,
+    positions_assets: Res<Assets<PodArrayAsset<[f32; 3]>>>,
     mesh_handles: Query<&Mesh3d>,
     meshes: Res<Assets<Mesh>>,
     mesh_materials: Query<&MeshMaterial3d<StandardMaterial>>,
@@ -97,8 +107,20 @@ pub fn dump_mesh_cpu_data_system(
     mut asset_materials: ResMut<Assets<StandardMaterial>>,
     mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, PositionData>>>,
 ) {
-    let Ok(_scene_root) = scene_roots.get(trigger.target()) else {
+    let Ok((_scene_root, tet)) = scene_roots.get(trigger.target()) else {
         return;
+    };
+
+    let tet_indices = match tet_indices_assets.get(&tet.tet_indices) {
+        Some(a) => &a.data,            // 假设你的 PodArrayAsset<T>(pub Vec<T>)
+        None => {
+            // 资产未就绪，先不做；也可以发个事件等资产加载完再处理
+            return;
+        }
+    };
+    let tet_pos = match positions_assets.get(&tet.positions) {
+        Some(a) => &a.data,
+        None => { return; }
     };
 
     for e in children.iter_descendants(trigger.target()) {
@@ -118,8 +140,6 @@ pub fn dump_mesh_cpu_data_system(
                     }
                 };
                 
-                let pos = mesh.attribute(ATTR_TET_POS);
-                warn!("Entity {:?}: {:?}", e, pos);
 
                 // ---------- 索引 ----------
                 // 可能是 None（非索引绘制）、U16 或 U32
@@ -128,7 +148,7 @@ pub fn dump_mesh_cpu_data_system(
                     Some(Indices::U16(v)) => v.iter().map(|&i| i as u32).collect(),
                     None => (0..positions.len() as u32).collect(), // 无索引时按顺序展开
                 };
-
+                
                 info!(
                     "Entity {:?}:pos_size: {}, positions = {:?},indices_size: {}, indices = {:?}, topology = {:?}",
                     e,
@@ -138,6 +158,26 @@ pub fn dump_mesh_cpu_data_system(
                     indices_u32,
                     mesh.primitive_topology()
                 );
+
+                // N_tri, N_pos, N_tet
+                // indices_u32: [[u32; 3]; N_tri]
+                // positions: [[f32; 3]; N_tri * 3] bageyalu -> 排序  --|
+                // tet_pos: [[f32; 3]: N_tet]    -> 排序  ----->  
+
+                // println!("positions: {:?}, tet_pos : {:?}", positions, tet_pos);
+                let mut new_idx = vec![]; // 
+                for i in &indices_u32 {
+                    for k in 0..tet_pos.len() {
+                        if tet_pos[k] == positions[*i as usize] {
+                            new_idx.push(k as u32);
+                            break;
+                        }
+                    }
+                }
+                if (new_idx.len() != indices_u32.len()) {
+                    panic!("new_idx.len() != indices.len()");
+                }
+                println!("new_idx: {:?}", new_idx);
 
                 // Get the material of the descendant or use the default one
                 let material : StandardMaterial = mesh_materials
@@ -152,7 +192,7 @@ pub fn dump_mesh_cpu_data_system(
                         new_material
                     });
 
-                let phys_data = PhysData::new(positions, indices_u32, &mut buffers);
+                let phys_data = PhysData::new(&tet_pos, &tet_indices, &mut buffers);
                 // Create a copy of the material and override base color
                 // If you intend on creating multiple models with the same tint, it
                 // is best to cache the handle somewhere, as having multiple materials

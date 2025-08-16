@@ -11,8 +11,6 @@ use std::sync::Arc;
 
 use slint::wgpu_24::wgpu;
 
-use crate::gltf_extra_attribute::{ATTR_TET_INDICES, ATTR_TET_POS};
-use bevy::gltf::GltfPlugin;
 use bevy::{
     prelude::*,
     render::{
@@ -23,6 +21,7 @@ use bevy::{
         RenderApp, RenderPlugin,
     },
 };
+use crate::bin_asset_loader::BinAssetPlugin;
 
 /// This enum describes the two kinds of message the Slint application send to the bevy integration thread.
 pub enum ControlMessage {
@@ -203,16 +202,11 @@ pub async fn run_bevy_app_with_slint(
                         )),
                     ),
                     ..default()
-                })
-                .set(
-                    // 关键：把 glTF 里的 "_MY_ATTR" 注册成 Bevy 里的 ATTR_MY
-                    GltfPlugin::default()
-                        .add_custom_vertex_attribute("pos", ATTR_TET_POS)
-                        .add_custom_vertex_attribute("tet_indices", ATTR_TET_INDICES),
-                ), //.disable::<bevy::winit::WinitPlugin>(),
+                }), //.disable::<bevy::winit::WinitPlugin>(),
         );
         app.add_plugins(SlintRenderToTexturePlugin(bevy_front_buffer_sender));
         app.add_plugins(ExtractResourcePlugin::<BackBuffer>::default());
+        app.add_plugins(BinAssetPlugin);
 
         bevy_main(app)
     });
