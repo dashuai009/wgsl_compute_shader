@@ -14,10 +14,8 @@
 }
 #endif
 
-@group(2) @binding(100) var<storage, read_write> pos: array<f32>;
-@group(2) @binding(101) var<storage, read_write> tet_indices: array<u32>;
-@group(2) @binding(102) var<uniform> points_size: u32;
-@group(2) @binding(103) var<uniform> tet_size: u32;
+@group(2) @binding(100) var<storage, read_write> tet_pos: array<f32>;
+@group(2) @binding(101) var<storage, read_write> to_tet_indices: array<u32>;
 
 
 // ===== 顶点着色器：只改位置，其余照常填充 =====
@@ -36,7 +34,7 @@ fn vertex(v: Vertex, @builtin(vertex_index) vid: u32) -> VertexOutput {
     // let vertex_id = tet_indices[vid];     // 先查索引
     // let base = 3u * vertex_id;            // 再定位位置
     let base = 3u * vvid;                      // xyz 连续存放
-    let p = vec3<f32>(pos[base], pos[base+1u], pos[base+2u]);
+    let p = vec3<f32>(tet_pos[base], tet_pos[base+1u], tet_pos[base+2u]);
     let local_pos4 =
         vec4<f32>(p + vec3<f32>(0, 0, 0), 1.0);
 

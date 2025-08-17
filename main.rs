@@ -116,9 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //         .into(),
                     // ))
                     .add_plugins(MaterialPlugin::<
-                        ExtendedMaterial<StandardMaterial, init_phys_data::PositionData>,
+                        ExtendedMaterial<StandardMaterial, init_phys_data::TriData>,
                     >::default())
-                    // .add_plugins(SimPlugin)
+                    .add_plugins(SimPlugin)
                     .add_systems(Startup, setup)
                     .add_systems(Update, reload_model_from_channel(model_selector_receiver))
                     .add_systems(Update, animate_camera)
@@ -337,7 +337,7 @@ fn reload_model_from_channel(
                     "{}{}{}_tet_indices.vec4u32bin",
                     base_path.0, new_model.path, new_model.name
                 )),
-                positions: asset_server.load(format!(
+                tet_pos: asset_server.load(format!(
                     "{}{}{}_positions.vec3f32bin",
                     base_path.0, new_model.path, new_model.name
                 )),

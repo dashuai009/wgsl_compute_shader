@@ -571,22 +571,23 @@ fn arap_solve_one_tet(inp: ARAPInputs) -> ARAPOutputs {
 struct Params {
     dt: f32,
     omega: f32,
-    _pad0: vec2<f32>,   // 16B 对齐
+//    _pad0: vec2<f32>,   // 16B 对齐
     NT: u32,
     NV: u32,
-    _pad1: vec2<u32>,
+//    _pad1: vec2<u32>,
 };
 
-@group(0) @binding(0) var<storage, read>       is_driven   : array<u32>;
-@group(0) @binding(1) var<storage, read>       tet_indices : array<vec4<u32>>;
-@group(0) @binding(2) var<storage, read>       inv_mass    : array<f32>;
-@group(0) @binding(3) var<storage, read>       B_flat      : array<f32>;
-@group(0) @binding(4) var<storage, read>       pos_mid     : array<vec3<f32>>; // add @stride(12) if packed
-@group(0) @binding(5) var<storage, read_write> lagrange    : array<f32>;
-@group(0) @binding(6) var<storage, read_write> residuals   : array<f32>;
+@group(0) @binding(0) var<storage, read_write> pos         : array<atomic<f32>>; // N_pos * 3
+@group(0) @binding(1) var<storage, read>       tet_indices : array<vec4<u32>>;   // N_tet
+@group(0) @binding(2) var<storage, read>       inv_mass    : array<f32>;         // N_pos
+@group(0) @binding(3) var<storage, read>       B_flat      : array<f32>;         // N_tet * 9
+@group(0) @binding(4) var<storage, read>       pos_mid     : array<f32>;         // N_pos * 3,  // add @stride(12) if packed
+@group(0) @binding(5) var<storage, read_write> lagrange    : array<f32>;         // N_tet
+@group(0) @binding(6) var<storage, read_write> residuals   : array<f32>;         // N_tet
 // pos as bit-pattern float buffer with atomics
-@group(0) @binding(7) var<storage, read_write> pos_bits    : array<atomic<u32>>;
-@group(0) @binding(8) var<uniform>             params      : Params;
+//@group(0) @binding(7) var<storage, read_write> pos    : array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read>       is_driven   : array<u32>;         // N_pos
+@group(0) @binding(8) var<uniform>             params      : Params;             // 1
 
 fn load_mat3_row_from_flat(base: u32) -> Mat3x3Row {
     var M: Mat3x3Row;
@@ -609,78 +610,79 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p2 = ids.z;
     let p3 = ids.w;
 
-    // // gather positions from pos_mid
-    // let x0 = pos_mid[p0];
-    // let x1 = pos_mid[p1];
-    // let x2 = pos_mid[p2];
-    // let x3 = pos_mid[p3];
+     // gather positions from pos_mid
+     let x0 = vec3<f32>(pos_mid[3 * p0 + 0], pos_mid[3 * p0 + 1], pos_mid[3 * p0 + 2]);
+     let x1 = vec3<f32>(pos_mid[3 * p1 + 0], pos_mid[3 * p1 + 1], pos_mid[3 * p1 + 2]);
+     let x2 = vec3<f32>(pos_mid[3 * p2 + 0], pos_mid[3 * p2 + 1], pos_mid[3 * p2 + 2]);
+     let x3 = vec3<f32>(pos_mid[3 * p3 + 0], pos_mid[3 * p3 + 1] ,pos_mid[3 * p3 + 2]);
 
-    // // gather per-vertex inv_mass
-    // let im = vec4<f32>(inv_mass[p0], inv_mass[p1], inv_mass[p2], inv_mass[p3]);
+     // gather per-vertex inv_mass
+     let im = vec4<f32>(inv_mass[p0], inv_mass[p1], inv_mass[p2], inv_mass[p3]);
 
-    // // driven flags (0/1)
-    // let drv = vec4<u32>(is_driven[p0], is_driven[p1], is_driven[p2], is_driven[p3]);
+     // driven flags (0/1)
+     let drv = vec4<u32>(is_driven[p0], is_driven[p1], is_driven[p2], is_driven[p3]);
 
-    // // B(t) row-major
-    // let B_t = load_mat3_row_from_flat(t * 9u);
+     // B(t) row-major
+     let B_t = load_mat3_row_from_flat(t * 9u);
 
-    // // scalar fields
-    // let alpha_t = /* alpha per tet */ residuals[t]; // <--- 占位：请把 alpha[t] 绑定成单独的缓冲或合并在别处
-    // // ^^^ 这里先占位引用，提醒你把 alpha[t] 真正接到一个缓冲。
-    // // 如果你已经有 alpha 缓冲，替换为： let alpha_t = alpha[t];
+     // scalar fields
+     let alpha_t = /* alpha per tet */ residuals[t]; // <--- 占位：请把 alpha[t] 绑定成单独的缓冲或合并在别处
+     // ^^^ 这里先占位引用，提醒你把 alpha[t] 真正接到一个缓冲。
+     // 如果你已经有 alpha 缓冲，替换为： let alpha_t = alpha[t];
 
-    // let inp = ARAPInputs(
-    //     x0, x1, x2, x3,
-    //     B_t,
-    //     im,
-    //     drv,
-    //     alpha_t,
-    //     lagrange[t],
-    //     params.dt,
-    //     params.omega
-    // );
+     let inp = ARAPInputs(
+         x0, x1, x2, x3,
+         B_t,
+         im,
+         drv,
+         alpha_t,
+         lagrange[t],
+         params.dt,
+         params.omega
+     );
 
-    // let outp = arap_solve_one_tet(inp);
+     let outp = arap_solve_one_tet(inp);
 
-    // if (!outp.skip) {
-    //     // 写回 lagrange/residual（每个 t 唯一，无需原子）
-    //     lagrange[t]  = outp.lagrange_new;
-    //     residuals[t] = outp.residual;
+     if (!outp.skip) {
+         // 写回 lagrange/residual（每个 t 唯一，无需原子）
+         lagrange[t]  = outp.lagrange_new;
+         residuals[t] = outp.residual;
 
-    //     // 原子累加 pos：pos 是按 (x,y,z) 顺序的 f32 位模式缓冲
-    //     // 每个顶点的基址 = p*3
-    //     let base0 = p0 * 3u;
-    //     let base1 = p1 * 3u;
-    //     let base2 = p2 * 3u;
-    //     let base3 = p3 * 3u;
+         // 原子累加 pos：pos 是按 (x,y,z) 顺序的 f32 位模式缓冲
+         // 每个顶点的基址 = p*3
+         let base0 = p0 * 3u;
+         let base1 = p1 * 3u;
+         let base2 = p2 * 3u;
+         let base3 = p3 * 3u;
 
-    //     if (drv.x == 0u) {
-    //         atomicAdd(&pos_bits[base0 + 0u], outp.dp0.x);
-    //         atomicAdd(&pos_bits[base0 + 1u], outp.dp0.y);
-    //         atomicAdd(&pos_bits[base0 + 2u], outp.dp0.z);
-    //     }
-    //     if (drv.y == 0u) {
-    //         atomicAdd(&pos_bits[base1 + 0u], outp.dp1.x);
-    //         atomicAdd(&pos_bits[base1 + 1u], outp.dp1.y);
-    //         atomicAdd(&pos_bits[base1 + 2u], outp.dp1.z);
-    //     }
-    //     if (drv.z == 0u) {
-    //         atomicAdd(&pos_bits[base2 + 0u], outp.dp2.x);
-    //         atomicAdd(&pos_bits[base2 + 1u], outp.dp2.y);
-    //         atomicAdd(&pos_bits[base2 + 2u], outp.dp2.z);
-    //     }
-    //     if (drv.w == 0u) {
-    //         atomicAdd(&pos_bits[base3 + 0u], outp.dp3.x);
-    //         atomicAdd(&pos_bits[base3 + 1u], outp.dp3.y);
-    //         atomicAdd(&pos_bits[base3 + 2u], outp.dp3.z);
-    //     }
-    // } else {
-    //     // 小于阈值：只清 residual，保持 lagrange 不变（与 CUDA 一致）
-    //     residuals[t] = 0.0;
-    // }
+         if (drv.x == 0u) {
+             atomicAdd(&pos[base0 + 0u], outp.dp0.x);
+             atomicAdd(&pos[base0 + 1u], outp.dp0.y);
+             atomicAdd(&pos[base0 + 2u], outp.dp0.z);
+         }
+         if (drv.y == 0u) {
+             atomicAdd(&pos[base1 + 0u], outp.dp1.x);
+             atomicAdd(&pos[base1 + 1u], outp.dp1.y);
+             atomicAdd(&pos[base1 + 2u], outp.dp1.z);
+         }
+         if (drv.z == 0u) {
+             atomicAdd(&pos[base2 + 0u], outp.dp2.x);
+             atomicAdd(&pos[base2 + 1u], outp.dp2.y);
+             atomicAdd(&pos[base2 + 2u], outp.dp2.z);
+         }
+         if (drv.w == 0u) {
+             atomicAdd(&pos[base3 + 0u], outp.dp3.x);
+             atomicAdd(&pos[base3 + 1u], outp.dp3.y);
+             atomicAdd(&pos[base3 + 2u], outp.dp3.z);
+         }
+     } else {
+         // 小于阈值：只清 residual，保持 lagrange 不变（与 CUDA 一致）
+         residuals[t] = 0.0;
+     }
 }
 
-
+// ==========================  test  ==============================
+// svd
 
 
 // Bindings for the input and output storage buffers.

@@ -7,3 +7,4 @@
 合并inv mass到pos的第四维上，是否性能更好
 （需要同时修改arap、sim_pipeline两个storage buffer）
 
+分别处理三角形数据和四面体数据，尝试优化加载第一帧的性能。
