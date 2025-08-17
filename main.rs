@@ -12,6 +12,7 @@ mod slint_bevy_adapter;
 mod web_asset;
 
 mod bin_asset_loader;
+mod tests;
 
 slint::slint! {
 import { Palette, Button, ComboBox, GroupBox, GridBox, Slider, HorizontalBox, VerticalBox, ProgressIndicator } from "std-widgets.slint";

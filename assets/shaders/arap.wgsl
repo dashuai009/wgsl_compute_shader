@@ -544,19 +544,6 @@ fn arap_solve_one_tet(inp: ARAPInputs) -> ARAPOutputs {
     return ARAPOutputs(dp0, dp1, dp2, dp3, lambda_new, res, false);
 }
 
-// // ---------- Atomic float add via CAS on atomic<u32> ----------
-// fn atomic_add_f32(p: ptr<storage, atomic<u32>, read_write>, val: f32) {
-//     var old_bits: u32 = atomicLoad(p);
-//     loop {
-//         let old_f = bitcast<f32>(old_bits);
-//         let new_f = old_f + val;
-//         let new_bits = bitcast<u32>(new_f);
-//         let r = atomicCompareExchangeWeak(p, old_bits, new_bits);
-//         if (r.exchanged) { break; }
-//         old_bits = r.old_value;
-//     }
-// }
-
 // ---------- Bound compute variant ----------
 
 // 注意：根据你的 CPU 侧布局，必要时加上 @stride(12) 等。这里假定：
@@ -577,7 +564,7 @@ struct Params {
 //    _pad1: vec2<u32>,
 };
 
-@group(0) @binding(0) var<storage, read_write> pos         : array<atomic<f32>>; // N_pos * 3
+@group(0) @binding(0) var<storage, read_write> pos         : array<atomic<u32>>; // N_pos * 3
 @group(0) @binding(1) var<storage, read>       tet_indices : array<vec4<u32>>;   // N_tet
 @group(0) @binding(2) var<storage, read>       inv_mass    : array<f32>;         // N_pos
 @group(0) @binding(3) var<storage, read>       B_flat      : array<f32>;         // N_tet * 9
@@ -588,6 +575,23 @@ struct Params {
 //@group(0) @binding(7) var<storage, read_write> pos    : array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read>       is_driven   : array<u32>;         // N_pos
 @group(0) @binding(8) var<uniform>             params      : Params;             // 1
+
+
+
+ // ---------- Atomic float add via CAS on atomic<u32> ----------
+ fn atomic_add_f32(idx: u32, val: f32) {
+     var old_bits: u32 = atomicLoad(&pos[idx]);
+     loop {
+         let old_f = bitcast<f32>(old_bits);
+         let new_f = old_f + val;
+         let new_bits = bitcast<u32>(new_f);
+         let r = atomicCompareExchangeWeak(&pos[idx], old_bits, new_bits);
+         if (r.exchanged) { break; }
+         old_bits = r.old_value;
+     }
+ }
+
+
 
 fn load_mat3_row_from_flat(base: u32) -> Mat3x3Row {
     var M: Mat3x3Row;
@@ -656,24 +660,24 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
          let base3 = p3 * 3u;
 
          if (drv.x == 0u) {
-             atomicAdd(&pos[base0 + 0u], outp.dp0.x);
-             atomicAdd(&pos[base0 + 1u], outp.dp0.y);
-             atomicAdd(&pos[base0 + 2u], outp.dp0.z);
+             atomic_add_f32( base0 + 0u, outp.dp0.x);
+             atomic_add_f32(base0 + 1u, outp.dp0.y);
+             atomic_add_f32(base0 + 2u, outp.dp0.z);
          }
          if (drv.y == 0u) {
-             atomicAdd(&pos[base1 + 0u], outp.dp1.x);
-             atomicAdd(&pos[base1 + 1u], outp.dp1.y);
-             atomicAdd(&pos[base1 + 2u], outp.dp1.z);
+             atomic_add_f32(base1 + 0u, outp.dp1.x);
+             atomic_add_f32(base1 + 1u, outp.dp1.y);
+             atomic_add_f32(base1 + 2u, outp.dp1.z);
          }
          if (drv.z == 0u) {
-             atomicAdd(&pos[base2 + 0u], outp.dp2.x);
-             atomicAdd(&pos[base2 + 1u], outp.dp2.y);
-             atomicAdd(&pos[base2 + 2u], outp.dp2.z);
+             atomic_add_f32(base2 + 0u, outp.dp2.x);
+             atomic_add_f32(base2 + 1u, outp.dp2.y);
+             atomic_add_f32(base2 + 2u, outp.dp2.z);
          }
          if (drv.w == 0u) {
-             atomicAdd(&pos[base3 + 0u], outp.dp3.x);
-             atomicAdd(&pos[base3 + 1u], outp.dp3.y);
-             atomicAdd(&pos[base3 + 2u], outp.dp3.z);
+             atomic_add_f32(base3 + 0u, outp.dp3.x);
+             atomic_add_f32(base3 + 1u, outp.dp3.y);
+             atomic_add_f32(base3 + 2u, outp.dp3.z);
          }
      } else {
          // 小于阈值：只清 residual，保持 lagrange 不变（与 CUDA 一致）

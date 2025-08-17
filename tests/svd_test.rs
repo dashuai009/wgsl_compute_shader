@@ -3,6 +3,8 @@ use nalgebra::{Matrix3, Vector3};
 use slint::wgpu_24::wgpu;
 use std::{borrow::Cow, default};
 use wgpu::util::DeviceExt;
+use rand::Rng;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
@@ -96,7 +98,7 @@ async fn run() {
     // ---------- 测试输入 ----------
     let th = std::f32::consts::FRAC_PI_4;
     let (c, s) = (th.cos(), th.sin());
-    let inputs: Vec<[f32; 9]> = vec![
+    let mut inputs: Vec<[f32; 9]> = vec![
         // Identity
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
         // Diagonal scale
@@ -106,6 +108,23 @@ async fn run() {
         // 一般非正交矩阵
         [1.0, 2.0, 3.0, 0.5, 1.0, 1.5, -0.2, 0.3, 0.8],
     ];
+    // rand input
+
+    let mut rng = rand::thread_rng();
+
+    // 生成 10 个随机 3x3 矩阵
+    let rand_inputs: Vec<[f32; 9]> = (0..10)
+        .map(|_| {
+            let mut mat = [0.0f32; 9];
+            for i in 0..9 {
+                // 生成范围在 [-5.0, 5.0] 之间的随机数
+                mat[i] = rng.gen_range(-5.0..5.0);
+            }
+            mat
+        })
+        .collect();
+
+    inputs.extend(rand_inputs);
     let n = inputs.len() as u32;
 
     // ---------- Buffers ----------
@@ -287,7 +306,7 @@ async fn run() {
 
 #[cfg(test)]
 mod test {
-    use crate::run;
+    use super::run;
 
     #[test]
     fn test_svd() {

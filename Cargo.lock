@@ -5711,6 +5711,7 @@ dependencies = [
  "futures-intrusive",
  "nalgebra",
  "pollster",
+ "rand",
  "reqwest",
  "slint",
  "smol",
