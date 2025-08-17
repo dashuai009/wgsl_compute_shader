@@ -1,7 +1,7 @@
 use slint::wgpu_24::wgpu;
 use slint::wgpu_24::wgpu::Device;
 
-pub async fn get_wgpu_device() -> Device {
+pub async fn get_wgpu_device_and_queue() -> (Device, wgpu::Queue) {
 
     // ---------- wgpu 初始化 ----------
     let instance = wgpu::Instance::default();
@@ -26,5 +26,5 @@ pub async fn get_wgpu_device() -> Device {
         .await
         .expect("request_device failed");
 
-    return device;
+    return (device, queue);
 }

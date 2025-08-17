@@ -5,6 +5,8 @@ use std::{borrow::Cow, default};
 use wgpu::util::DeviceExt;
 use rand::Rng;
 
+mod utils;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Zeroable, Pod)]
@@ -73,27 +75,7 @@ fn recon_rel_err(a: &Matrix3<f32>, u: &Matrix3<f32>, s: &Vector3<f32>, v: &Matri
 
 async fn run() {
     // ---------- wgpu 初始化 ----------
-    let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .expect("No adapter");
-    let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                ..Default::default()
-            },
-            None,
-        )
-        .await
-        .expect("request_device failed");
+    let (device, queue) = utils::get_wgpu_device_and_queue().await;
 
     // ---------- 测试输入 ----------
     let th = std::f32::consts::FRAC_PI_4;

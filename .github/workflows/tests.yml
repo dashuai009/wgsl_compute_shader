@@ -1,0 +1,29 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4 # Checks out your repository under $GITHUB_WORKSPACE
+      - uses: actions-rs/toolchain@v1 # Installs the Rust toolchain
+        with:
+          toolchain: stable # Or 'nightly', 'beta', or a specific version like '1.70.0'
+          override: true # Overrides the default toolchain
+      - uses: actions-rs/cargo@v1 # Runs Cargo commands
+        with:
+          command: build
+          args: --verbose
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --verbose

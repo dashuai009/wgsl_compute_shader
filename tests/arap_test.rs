@@ -1,9 +1,9 @@
-use super::utils;
+mod utils;
 
 
 async fn run() {
-    let device = utils::get_wgpu_device().await;
-    
+    let (device, queue) = utils::get_wgpu_device_and_queue().await;
+
 }
 
 
