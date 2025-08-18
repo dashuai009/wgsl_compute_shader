@@ -454,16 +454,141 @@ fn mul_row3(a: Mat3x3Row, b: Mat3x3Row) -> Mat3x3Row {
     return r;
 }
 
-fn compute_gradient_row_major(
-    U: Mat3x3Row, S: vec3<f32>, V: Mat3x3Row, B: Mat3x3Row
-) -> Grad12{
-    var res: Grad12;
-    for(var k: u32 = 0u; k < 12u; k++) {
-        res[k] = 0; //array<f32, 12>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    }
-    return res;
-}
+//fn compute_gradient_row_major(
+//    U: Mat3x3Row, S: vec3<f32>, V: Mat3x3Row, B: Mat3x3Row
+//) -> Grad12{
+//    var res: Grad12;
+//    for(var k: u32 = 0u; k < 12u; k++) {
+//        res[k] = 0; //array<f32, 12>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+//    }
+//    return res;
+//}
 
+fn compute_gradient_row_major(
+    U: Mat3x3Row,   // row-major 3x3
+    S: vec3<f32>,       // singular values
+    V: Mat3x3Row,   // row-major 3x3
+    B: Mat3x3Row    // row-major 3x3
+) -> Grad12 {
+    // 0) 计算约束值 ||S - 1||
+    let ones  = vec3<f32>(1.0, 1.0, 1.0);
+    let diff  = S - ones;
+    let constraint: f32 = sqrt(diff.x * diff.x + diff.y * diff.y + diff.z * diff.z);
+
+    if (constraint < EPS) {
+        // 全零输出
+        return array<f32, 12>(
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0
+        );
+    }
+
+    // 1) dC/dS
+    let dcdS: vec3<f32> = diff / constraint;
+
+    // 2) 提取 B 的元素（行优先）
+    let B00 = B[0u*3u + 0u];
+    let B01 = B[0u*3u + 1u];
+    let B02 = B[0u*3u + 2u];
+    let B10 = B[1u*3u + 0u];
+    let B11 = B[1u*3u + 1u];
+    let B12 = B[1u*3u + 2u];
+    let B20 = B[2u*3u + 0u];
+    let B21 = B[2u*3u + 1u];
+    let B22 = B[2u*3u + 2u];
+
+    // 3) 构造 dS/dF(ij) 的三个分量向量（用 U 行 * V 行）
+    // 注意：U(i,k) = U[i*3+k]，V(j,k) = V[j*3+k]，均为行优先
+    let dsdF00 = vec3<f32>(
+        U[0u*3u+0u] * V[0u*3u+0u],
+        U[0u*3u+1u] * V[0u*3u+1u],
+        U[0u*3u+2u] * V[0u*3u+2u]
+    );
+    let dsdF10 = vec3<f32>(
+        U[1u*3u+0u] * V[0u*3u+0u],
+        U[1u*3u+1u] * V[0u*3u+1u],
+        U[1u*3u+2u] * V[0u*3u+2u]
+    );
+    let dsdF20 = vec3<f32>(
+        U[2u*3u+0u] * V[0u*3u+0u],
+        U[2u*3u+1u] * V[0u*3u+1u],
+        U[2u*3u+2u] * V[0u*3u+2u]
+    );
+
+    let dsdF01 = vec3<f32>(
+        U[0u*3u+0u] * V[1u*3u+0u],
+        U[0u*3u+1u] * V[1u*3u+1u],
+        U[0u*3u+2u] * V[1u*3u+2u]
+    );
+    let dsdF11 = vec3<f32>(
+        U[1u*3u+0u] * V[1u*3u+0u],
+        U[1u*3u+1u] * V[1u*3u+1u],
+        U[1u*3u+2u] * V[1u*3u+2u]
+    );
+    let dsdF21 = vec3<f32>(
+        U[2u*3u+0u] * V[1u*3u+0u],
+        U[2u*3u+1u] * V[1u*3u+1u],
+        U[2u*3u+2u] * V[1u*3u+2u]
+    );
+
+    let dsdF02 = vec3<f32>(
+        U[0u*3u+0u] * V[2u*3u+0u],
+        U[0u*3u+1u] * V[2u*3u+1u],
+        U[0u*3u+2u] * V[2u*3u+2u]
+    );
+    let dsdF12 = vec3<f32>(
+        U[1u*3u+0u] * V[2u*3u+0u],
+        U[1u*3u+1u] * V[2u*3u+1u],
+        U[1u*3u+2u] * V[2u*3u+2u]
+    );
+    let dsdF22 = vec3<f32>(
+        U[2u*3u+0u] * V[2u*3u+0u],
+        U[2u*3u+1u] * V[2u*3u+1u],
+        U[2u*3u+2u] * V[2u*3u+2u]
+    );
+
+    // 4) dC/dF（按你的 CPU 代码顺序）
+    var dcdF: array<f32, 9>;
+    dcdF[0u] = dot(dsdF00, dcdS);
+    dcdF[1u] = dot(dsdF10, dcdS);
+    dcdF[2u] = dot(dsdF20, dcdS);
+    dcdF[3u] = dot(dsdF01, dcdS);
+    dcdF[4u] = dot(dsdF11, dcdS);
+    dcdF[5u] = dot(dsdF21, dcdS);
+    dcdF[6u] = dot(dsdF02, dcdS);
+    dcdF[7u] = dot(dsdF12, dcdS);
+    dcdF[8u] = dot(dsdF22, dcdS);
+
+    // 5) g1, g2, g3
+    let g1 = vec3<f32>(
+        B00 * dcdF[0u] + B01 * dcdF[3u] + B02 * dcdF[6u],
+        B00 * dcdF[1u] + B01 * dcdF[4u] + B02 * dcdF[7u],
+        B00 * dcdF[2u] + B01 * dcdF[5u] + B02 * dcdF[8u]
+    );
+    let g2 = vec3<f32>(
+        B10 * dcdF[0u] + B11 * dcdF[3u] + B12 * dcdF[6u],
+        B10 * dcdF[1u] + B11 * dcdF[4u] + B12 * dcdF[7u],
+        B10 * dcdF[2u] + B11 * dcdF[5u] + B12 * dcdF[8u]
+    );
+    let g3 = vec3<f32>(
+        B20 * dcdF[0u] + B21 * dcdF[3u] + B22 * dcdF[6u],
+        B20 * dcdF[1u] + B21 * dcdF[4u] + B22 * dcdF[7u],
+        B20 * dcdF[2u] + B21 * dcdF[5u] + B22 * dcdF[8u]
+    );
+
+    // 6) g0 = -(g1 + g2 + g3)
+    let g0 = -(g1 + g2 + g3);
+
+    // 7) 按 Vec4x3 (g0,g1,g2,g3) 的顺序打包输出
+    var out: array<f32, 12>;
+    out[ 0u] = g0.x; out[ 1u] = g0.y; out[ 2u] = g0.z;
+    out[ 3u] = g1.x; out[ 4u] = g1.y; out[ 5u] = g1.z;
+    out[ 6u] = g2.x; out[ 7u] = g2.y; out[ 8u] = g2.z;
+    out[ 9u] = g3.x; out[10u] = g3.y; out[11u] = g3.z;
+    return out;
+}
 
 // ---------- Pure function: one-tet solve (no bindings, no atomics) ----------
 
@@ -578,18 +703,18 @@ struct Params {
 
 
 
- // ---------- Atomic float add via CAS on atomic<u32> ----------
- fn atomic_add_f32(idx: u32, val: f32) {
-     var old_bits: u32 = atomicLoad(&pos[idx]);
-     loop {
-         let old_f = bitcast<f32>(old_bits);
-         let new_f = old_f + val;
-         let new_bits = bitcast<u32>(new_f);
-         let r = atomicCompareExchangeWeak(&pos[idx], old_bits, new_bits);
-         if (r.exchanged) { break; }
-         old_bits = r.old_value;
-     }
- }
+// ---------- Atomic float add via CAS on atomic<u32> ----------
+fn atomic_add_f32(idx: u32, val: f32) {
+    var old_bits: u32 = atomicLoad(&pos[idx]);
+    loop {
+        let old_f = bitcast<f32>(old_bits);
+        let new_f = old_f + val;
+        let new_bits = bitcast<u32>(new_f);
+        let r = atomicCompareExchangeWeak(&pos[idx], old_bits, new_bits);
+        if (r.exchanged) { break; }
+        old_bits = r.old_value;
+    }
+}
 
 
 
@@ -614,11 +739,33 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p2 = ids.z;
     let p3 = ids.w;
 
+
      // gather positions from pos_mid
-     let x0 = vec3<f32>(pos_mid[3 * p0 + 0], pos_mid[3 * p0 + 1], pos_mid[3 * p0 + 2]);
-     let x1 = vec3<f32>(pos_mid[3 * p1 + 0], pos_mid[3 * p1 + 1], pos_mid[3 * p1 + 2]);
-     let x2 = vec3<f32>(pos_mid[3 * p2 + 0], pos_mid[3 * p2 + 1], pos_mid[3 * p2 + 2]);
-     let x3 = vec3<f32>(pos_mid[3 * p3 + 0], pos_mid[3 * p3 + 1] ,pos_mid[3 * p3 + 2]);
+     let x0 = vec3<f32>(
+         bitcast<f32>(atomicLoad(&pos[3 * p0 + 0])),
+         bitcast<f32>(atomicLoad(&pos[3 * p0 + 1])),
+         bitcast<f32>(atomicLoad(&pos[3 * p0 + 2]))
+     );
+     let x1 = vec3<f32>(
+         bitcast<f32>(atomicLoad(&pos[3 * p1 + 0])),
+         bitcast<f32>(atomicLoad(&pos[3 * p1 + 1])),
+         bitcast<f32>(atomicLoad(&pos[3 * p1 + 2]))
+     );
+     let x2 = vec3<f32>(
+         bitcast<f32>(atomicLoad(&pos[3 * p2 + 0])),
+         bitcast<f32>(atomicLoad(&pos[3 * p2 + 1])),
+         bitcast<f32>(atomicLoad(&pos[3 * p2 + 2]))
+      );
+     let x3 = vec3<f32>(
+         bitcast<f32>(atomicLoad(&pos[3 * p3 + 0])),
+         bitcast<f32>(atomicLoad(&pos[3 * p3 + 1])),
+         bitcast<f32>(atomicLoad(&pos[3 * p3 + 2]))
+     );
+//     // gather positions from pos_mid
+//     let x0 = vec3<f32>(pos_mid[3 * p0 + 0], pos_mid[3 * p0 + 1], pos_mid[3 * p0 + 2]);
+//     let x1 = vec3<f32>(pos_mid[3 * p1 + 0], pos_mid[3 * p1 + 1], pos_mid[3 * p1 + 2]);
+//     let x2 = vec3<f32>(pos_mid[3 * p2 + 0], pos_mid[3 * p2 + 1], pos_mid[3 * p2 + 2]);
+//     let x3 = vec3<f32>(pos_mid[3 * p3 + 0], pos_mid[3 * p3 + 1] ,pos_mid[3 * p3 + 2]);
 
      // gather per-vertex inv_mass
      let im = vec4<f32>(inv_mass[p0], inv_mass[p1], inv_mass[p2], inv_mass[p3]);
@@ -660,7 +807,7 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
          let base3 = p3 * 3u;
 
          if (drv.x == 0u) {
-             atomic_add_f32( base0 + 0u, outp.dp0.x);
+             atomic_add_f32(base0 + 0u, outp.dp0.x);
              atomic_add_f32(base0 + 1u, outp.dp0.y);
              atomic_add_f32(base0 + 2u, outp.dp0.z);
          }

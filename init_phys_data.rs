@@ -96,7 +96,7 @@ pub struct PhysData {
 }
 
 impl PhysData {
-    fn new(
+    pub fn new(
         positions: &[[f32; 3]],
         tet_indices: &[[u32; 4]],
         mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
@@ -106,8 +106,10 @@ impl PhysData {
 
         let pos_buffer_data = positions
             .into_iter()
+            .map(|x| [x[0], 0.0,  x[2]])
             .flatten() // 自动展平 [f32; 3]
-            .collect::<Vec<&f32>>();
+            .collect::<Vec<_>>();
+        
         let pos_buffer = buffers.add(ShaderStorageBuffer::from(pos_buffer_data.clone()));
 
         let tet_indices_buffer_data = tet_indices
@@ -416,8 +418,17 @@ fn prepare_sim_data_bind_groups(
     phys_data: Res<PhysData>,
     gpu_ssbos: Res<RenderAssets<GpuShaderStorageBuffer>>,
     render_device: Res<RenderDevice>,
-    sim_params_buffer: Res<SimParamsBuffer>,
+    mut sim_params_buffer: ResMut<SimParamsBuffer>,
+    render_queue: Res<RenderQueue>,
 ) {
+    let buffer = sim_params_buffer.buffer.get_mut();
+    buffer.omega = 1.0f32;
+    buffer.NT = phys_data.tet_size;
+    buffer.NV = phys_data.points_size;
+
+    sim_params_buffer
+        .buffer
+        .write_buffer(&render_device, &render_queue);
     info!("prepare phys data bind groups");
     // 句柄 -> GPU 侧资源
     let Some(pos_gpu) = gpu_ssbos.get(&phys_data.pos) else {
@@ -573,4 +584,21 @@ impl render_graph::Node for SimNode {
 
         Ok(())
     }
+}
+
+
+#[test]
+mod tests {
+    use super::*;
+    use bevy::prelude::*;
+    
+    fn test_arap() {
+
+        let (device, queue) = utils::get_wgpu_device_and_queue().await;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.run();
+        let buffers = app.world_mut().resource_mut::<Assets<ShaderStorageBuffer>>();
+    }
+    
 }
