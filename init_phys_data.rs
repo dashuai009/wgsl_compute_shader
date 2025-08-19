@@ -585,20 +585,293 @@ impl render_graph::Node for SimNode {
         Ok(())
     }
 }
-
-
-#[test]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::prelude::*;
-    
-    fn test_arap() {
+    use slint::wgpu_24::wgpu;
+    use wgpu::util::DeviceExt;
+    use bytemuck::{cast_slice, Pod, Zeroable};
+    use std::borrow::Cow;
 
-        let (device, queue) = utils::get_wgpu_device_and_queue().await;
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.run();
-        let buffers = app.world_mut().resource_mut::<Assets<ShaderStorageBuffer>>();
+    #[repr(C)]
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    struct Params {
+        dt: f32,
+        omega: f32,
+        NT: u32,
+        NV: u32,
     }
-    
+
+    const WGSL: &str = include_str!("assets/shaders/arap.wgsl");
+
+    async fn run() {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("No adapter");
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .expect("request_device failed");
+
+        // test data
+        let tet_pos = [
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let tet_indices = [[0u32, 1, 2, 3]];
+
+        let pos_flat: Vec<f32> = tet_pos.iter().flat_map(|p| p.iter()).copied().collect();
+        let pos_bits: Vec<u32> = pos_flat.iter().map(|f| f.to_bits()).collect();
+        let pos_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pos"),
+            contents: cast_slice(&pos_bits),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let tet_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("tet_indices"),
+            contents: cast_slice(&tet_indices),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let inv_mass = [1.0f32; 4];
+        let inv_mass_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("inv_mass"),
+            contents: cast_slice(&inv_mass),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let B_flat = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let B_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("B"),
+            contents: cast_slice(&B_flat),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let pos_mid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("pos_mid"),
+            contents: cast_slice(&pos_flat),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let lagrange = [0.0f32];
+        let lagrange_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("lagrange"),
+            contents: cast_slice(&lagrange),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let residuals = [0.0f32];
+        let residuals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("residuals"),
+            contents: cast_slice(&residuals),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let is_driven = [0u32; 4];
+        let is_driven_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("is_driven"),
+            contents: cast_slice(&is_driven),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let params = Params { dt: 1.0, omega: 1.0, NT: 1, NV: 4 };
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("params"),
+            contents: cast_slice(&[params]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let pos_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pos_readback"),
+            size: (pos_bits.len() * 4) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let residual_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("residual_readback"),
+            size: 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("arap"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WGSL)),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("cs_arap"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_arap"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bg"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: pos_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: tet_indices_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: inv_mass_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: B_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pos_mid_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: lagrange_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: residuals_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: is_driven_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: params_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("pass"), timestamp_writes: None });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&pos_buffer, 0, &pos_readback, 0, (pos_bits.len() * 4) as u64);
+        encoder.copy_buffer_to_buffer(&residuals_buffer, 0, &residual_readback, 0, 4);
+        queue.submit(Some(encoder.finish()));
+
+        let slice_pos = pos_readback.slice(..);
+        slice_pos.map_async(wgpu::MapMode::Read, |_| {});
+        let slice_res = residual_readback.slice(..);
+        slice_res.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+
+        let data_pos = slice_pos.get_mapped_range();
+        let out_bits: &[u32] = cast_slice(&data_pos);
+        let out_pos: Vec<f32> = out_bits.iter().map(|&b| f32::from_bits(b)).collect();
+        assert_eq!(out_pos, pos_flat);
+        drop(data_pos);
+        pos_readback.unmap();
+
+        let data_res = slice_res.get_mapped_range();
+        let out_res: &[f32] = cast_slice(&data_res);
+        assert!(out_res[0].abs() < 1e-6);
+        drop(data_res);
+        residual_readback.unmap();
+    }
+
+    #[test]
+    fn test_arap_rest_state() {
+        pollster::block_on(run());
+    }
 }
