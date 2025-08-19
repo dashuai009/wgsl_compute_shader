@@ -686,6 +686,7 @@ struct Params {
 //    _pad0: vec2<f32>,   // 16B 对齐
     NT: u32,
     NV: u32,
+    mu: f32
 //    _pad1: vec2<u32>,
 };
 
@@ -693,13 +694,14 @@ struct Params {
 @group(0) @binding(1) var<storage, read>       tet_indices : array<vec4<u32>>;   // N_tet
 @group(0) @binding(2) var<storage, read>       inv_mass    : array<f32>;         // N_pos
 @group(0) @binding(3) var<storage, read>       B_flat      : array<f32>;         // N_tet * 9
-@group(0) @binding(4) var<storage, read>       pos_mid     : array<f32>;         // N_pos * 3,  // add @stride(12) if packed
+@group(0) @binding(4) var<storage, read_write> pos_mid     : array<f32>;         // N_pos * 3,  // add @stride(12) if packed
 @group(0) @binding(5) var<storage, read_write> lagrange    : array<f32>;         // N_tet
 @group(0) @binding(6) var<storage, read_write> residuals   : array<f32>;         // N_tet
 // pos as bit-pattern float buffer with atomics
 //@group(0) @binding(7) var<storage, read_write> pos    : array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read>       is_driven   : array<u32>;         // N_pos
 @group(0) @binding(8) var<uniform>             params      : Params;             // 1
+@group(0) @binding(9) var<storage, read>       alpha       : array<f32>;         // N_tet
 
 
 
@@ -725,6 +727,18 @@ fn load_mat3_row_from_flat(base: u32) -> Mat3x3Row {
         M[i] = B_flat[base + i];
     }
     return M;
+}
+
+
+@compute @workgroup_size(64, 1, 1)
+fn copy_mid_pos(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let t = gid.x;
+    if (t >= params.NV) { // 边界保护：只处理 [0, NV)
+        return;
+    }
+    pos_mid[3u * t + 0] = bitcast<f32>(atomicLoad(&pos[3 * t + 0]));
+    pos_mid[3u * t + 1] = bitcast<f32>(atomicLoad(&pos[3 * t + 1]));
+    pos_mid[3u * t + 2] = bitcast<f32>(atomicLoad(&pos[3 * t + 2]));
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -776,17 +790,12 @@ fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
      // B(t) row-major
      let B_t = load_mat3_row_from_flat(t * 9u);
 
-     // scalar fields
-     let alpha_t = /* alpha per tet */ residuals[t]; // <--- 占位：请把 alpha[t] 绑定成单独的缓冲或合并在别处
-     // ^^^ 这里先占位引用，提醒你把 alpha[t] 真正接到一个缓冲。
-     // 如果你已经有 alpha 缓冲，替换为： let alpha_t = alpha[t];
-
      let inp = ARAPInputs(
          x0, x1, x2, x3,
          B_t,
          im,
          drv,
-         alpha_t,
+         alpha[t],
          lagrange[t],
          params.dt,
          params.omega

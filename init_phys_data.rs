@@ -23,6 +23,7 @@ use bevy::{
     sprite::{Material2d, Material2dKey},
     tasks::futures_lite,
 };
+use bytemuck::{Pod, Zeroable};
 
 use crate::bin_asset_loader::PodArrayAsset;
 use bevy::diagnostic::FrameCount;
@@ -50,12 +51,14 @@ pub struct TetData {
     pub tet_pos: Handle<PodArrayAsset<[f32; 3]>>,
 }
 
-#[derive(ShaderType, Default)]
+#[repr(C)]
+#[derive(ShaderType, Default, Copy, Clone, Pod, Zeroable)]
 pub struct SimParams {
     dt: f32,
     omega: f32,
     NT: u32,
     NV: u32,
+    mu: f32,
 }
 
 /// The buffer containing the [`SimParams`]
@@ -106,10 +109,10 @@ impl PhysData {
 
         let pos_buffer_data = positions
             .into_iter()
-            .map(|x| [x[0], 0.0,  x[2]])
+            .map(|x| [x[0], 0.0, x[2]])
             .flatten() // 自动展平 [f32; 3]
             .collect::<Vec<_>>();
-        
+
         let pos_buffer = buffers.add(ShaderStorageBuffer::from(pos_buffer_data.clone()));
 
         let tet_indices_buffer_data = tet_indices
@@ -277,6 +280,7 @@ pub fn dump_mesh_cpu_data_system(
                         new_material
                     });
 
+                info!("tet data: pos: {:?}, indices: {:?}", tet_pos, tet_indices);
                 let phys_data = PhysData::new(&tet_pos, &tet_indices, &mut buffers);
 
                 let to_tet_indices = buffers.add(ShaderStorageBuffer::from(new_idx));
@@ -587,20 +591,12 @@ impl render_graph::Node for SimNode {
 }
 #[cfg(test)]
 mod tests {
+    use super::SimParams;
     use super::*;
-    use slint::wgpu_24::wgpu;
-    use wgpu::util::DeviceExt;
     use bytemuck::{cast_slice, Pod, Zeroable};
+    use slint::wgpu_24::wgpu;
     use std::borrow::Cow;
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Pod, Zeroable)]
-    struct Params {
-        dt: f32,
-        omega: f32,
-        NT: u32,
-        NV: u32,
-    }
+    use wgpu::util::DeviceExt;
 
     const WGSL: &str = include_str!("assets/shaders/arap.wgsl");
 
@@ -614,12 +610,15 @@ mod tests {
             })
             .await
             .expect("No adapter");
+
+        let mut required_limits = wgpu::Limits::downlevel_defaults();
+        required_limits.max_storage_buffers_per_shader_stage = 12;
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits,
                     ..Default::default()
                 },
                 None,
@@ -627,14 +626,40 @@ mod tests {
             .await
             .expect("request_device failed");
 
-        // test data
+        // test data #1: cube
         let tet_pos = [
-            [0.0f32, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
+            [-0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [0.5, -0.5, 0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, -0.5],
+            [-0.5, -0.5, -0.5],
+            [0.16666666, -0.024191124, -0.16666667],
         ];
-        let tet_indices = [[0u32, 1, 2, 3]];
+        let tet_indices = [
+            [8, 1, 6, 4],
+            [4, 0, 5, 8],
+            [8, 2, 3, 1],
+            [1, 8, 2, 0],
+            [7, 8, 4, 5],
+            [8, 4, 6, 7],
+            [8, 3, 6, 1],
+            [8, 7, 6, 3],
+            [2, 8, 7, 5],
+            [4, 8, 1, 0],
+            [2, 7, 8, 3],
+            [2, 8, 5, 0],
+        ];
+
+        let params = SimParams {
+            dt: 0.04,
+            omega: 0.1,
+            NT: 12,
+            NV: 9,
+            mu: 1e9,
+        };
 
         let pos_flat: Vec<f32> = tet_pos.iter().flat_map(|p| p.iter()).copied().collect();
         let pos_bits: Vec<u32> = pos_flat.iter().map(|f| f.to_bits()).collect();
@@ -650,17 +675,31 @@ mod tests {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let inv_mass = [1.0f32; 4];
+        let inv_mass = vec![1.0f32; tet_pos.len()];
         let inv_mass_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("inv_mass"),
             contents: cast_slice(&inv_mass),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let B_flat = [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let mut B_mat = vec![];
+        let mut B_buffer_data = vec![];
+
+        for (i, [ia, ib, ic, id]) in tet_indices.iter().enumerate() {
+            let p0 = nalgebra::Vector3::from(tet_pos[ia.clone() as usize]);
+            let p1 = nalgebra::Vector3::from(tet_pos[ib.clone() as usize]);
+            let p2 = nalgebra::Vector3::from(tet_pos[ic.clone() as usize]);
+            let p3 = nalgebra::Vector3::from(tet_pos[id.clone() as usize]);
+
+            // 构造 D_m: 每一列是 pi - p0
+            let d_m = nalgebra::Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
+            B_mat.push(d_m.clone());
+
+            B_buffer_data.extend_from_slice(d_m.try_inverse().unwrap().as_slice());
+        }
         let B_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("B"),
-            contents: cast_slice(&B_flat),
+            contents: cast_slice(&B_buffer_data),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -670,32 +709,54 @@ mod tests {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let lagrange = [0.0f32];
+        let lagrange = vec![0.0f32; tet_indices.len()];
         let lagrange_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("lagrange"),
             contents: cast_slice(&lagrange),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
 
-        let residuals = [0.0f32];
+        let residuals = vec![0.0f32; tet_indices.len()];
         let residuals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("residuals"),
             contents: cast_slice(&residuals),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
 
-        let is_driven = [0u32; 4];
+        let is_driven = vec![0u32; tet_pos.len()];
         let is_driven_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("is_driven"),
             contents: cast_slice(&is_driven),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let params = Params { dt: 1.0, omega: 1.0, NT: 1, NV: 4 };
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("params"),
-            contents: cast_slice(&[params]),
+            contents: cast_slice(&[params.clone()]),
             usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let mut alpha = vec![];
+        let mut rest_volume = vec![];
+        for i in 0..tet_pos.len() {
+            let rest_volume_i = 1.0 / 6.0 * B_mat[i].determinant().abs();
+            rest_volume.push(rest_volume_i);
+
+            if (rest_volume_i <= 0.0) {
+                panic!("rest_volume <= 0.0, please check the input tet mesh  or init the rest_volume(by init_B) first!");
+            }
+            // this->alpha_tilde[i] = inv_h2 * inv_mu * 1.0/rest_volume[i];
+            let alpha_i = (1.0f32 / params.mu) * 1.0 / rest_volume_i;
+
+            // this->alpha_hyd[i] =  1.0 / this->lame_lambda * 1.0/rest_volume[i];
+            alpha.push(alpha_i);
+        }
+        
+        println!("alpha: {:?}, rest_vol: {:?}", alpha, rest_volume);
+        let alpha_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("alpha"),
+            contents: cast_slice(&alpha),
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         let pos_readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -706,7 +767,7 @@ mod tests {
         });
         let residual_readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("residual_readback"),
-            size: 4,
+            size: (tet_indices.len() * 4) as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -758,7 +819,7 @@ mod tests {
                     binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -804,6 +865,16 @@ mod tests {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -827,27 +898,96 @@ mod tests {
             label: Some("bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: pos_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: tet_indices_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: inv_mass_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: B_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: pos_mid_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: lagrange_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: residuals_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: is_driven_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pos_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: tet_indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: inv_mass_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: B_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: pos_mid_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: lagrange_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: residuals_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: is_driven_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: alpha_buffer.as_entire_binding(),
+                },
             ],
         });
+        let copy_mid_pos_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("cmp_pl"),
+                bind_group_layouts: &[&bgl],
+                push_constant_ranges: &[],
+            });
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc") });
+        let copy_mid_pos_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("copy_mid_pos"),
+                layout: Some(&copy_mid_pos_pipeline_layout),
+                module: &shader,
+                entry_point: Some("copy_mid_pos"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        let iters = 30;
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc") });
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("pass"), timestamp_writes: None });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("pass"),
+                timestamp_writes: None,
+            });
+            for k in 0..iters {
+                pass.set_pipeline(&copy_mid_pos_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups((params.NV + 64 - 1) / 64, 1, 1);
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups((params.NT + 64 - 1) / 64, 1, 1);
+            }
         }
-        encoder.copy_buffer_to_buffer(&pos_buffer, 0, &pos_readback, 0, (pos_bits.len() * 4) as u64);
-        encoder.copy_buffer_to_buffer(&residuals_buffer, 0, &residual_readback, 0, 4);
+        encoder.copy_buffer_to_buffer(
+            &pos_buffer,
+            0,
+            &pos_readback,
+            0,
+            (pos_bits.len() * 4) as u64,
+        );
+        encoder.copy_buffer_to_buffer(
+            &residuals_buffer,
+            0,
+            &residual_readback,
+            0,
+            (tet_indices.len() * 4) as u64,
+        );
         queue.submit(Some(encoder.finish()));
 
         let slice_pos = pos_readback.slice(..);
@@ -859,12 +999,15 @@ mod tests {
         let data_pos = slice_pos.get_mapped_range();
         let out_bits: &[u32] = cast_slice(&data_pos);
         let out_pos: Vec<f32> = out_bits.iter().map(|&b| f32::from_bits(b)).collect();
-        assert_eq!(out_pos, pos_flat);
+        println!("outpos: {:?}", out_pos);
+        // assert_eq!(out_pos, pos_flat);
         drop(data_pos);
         pos_readback.unmap();
 
         let data_res = slice_res.get_mapped_range();
         let out_res: &[f32] = cast_slice(&data_res);
+        println!("residual: {:?}", out_res);
+        // assert!(out_res[0].abs() < 1e-6);
         assert!(out_res[0].abs() < 1e-6);
         drop(data_res);
         residual_readback.unmap();

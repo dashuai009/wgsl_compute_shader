@@ -11,6 +11,11 @@ description = "Simulations Example"
 name = "bevy_example"
 path = "main.rs"
 
+[lib]
+name = "simulations"
+crate-type = ["cdylib"]
+path = "lib.rs"
+
 [dependencies]
 slint = { version = "1.12.1", features = ["unstable-wgpu-24"] }
 spin_on = { version = "0.1.1" }
