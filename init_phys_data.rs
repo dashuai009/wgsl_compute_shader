@@ -76,6 +76,8 @@ pub fn prepare_sim_params_buffer(
 ) {
     let buffer = sim_params_buffer.buffer.get_mut();
     buffer.dt = time.elapsed_secs_wrapped();
+    buffer.mu = 1e9;
+    buffer.omega = 0.1;
     // buffer.delta_time = time.delta_secs();
     // buffer.frame_count = frame_count.0;
 
@@ -94,6 +96,7 @@ pub struct PhysData {
     pub lagrange: Handle<ShaderStorageBuffer>,    // [f32; N_tet]
     pub residuals: Handle<ShaderStorageBuffer>,   // [f32; N_tet]
     pub is_dirven: Handle<ShaderStorageBuffer>,   // [f32; N_pos]
+    pub alpha: Handle<ShaderStorageBuffer>,       // [f32; N_pos]
     pub points_size: u32,
     pub tet_size: u32,
 }
@@ -103,6 +106,7 @@ impl PhysData {
         positions: &[[f32; 3]],
         tet_indices: &[[u32; 4]],
         mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
+        // params: &SimParams,
     ) -> Self {
         let points_size = positions.len() as u32;
         let tet_size = tet_indices.len() as u32;
@@ -125,6 +129,7 @@ impl PhysData {
         let inv_mass_buffer = buffers.add(ShaderStorageBuffer::from(inv_mass_buffer_data));
 
         let mut B_buffer_data = vec![];
+        let mut B_mat = vec![];
 
         for (i, [ia, ib, ic, id]) in tet_indices.iter().enumerate() {
             let p0 = nalgebra::Vector3::from(positions[ia.clone() as usize]);
@@ -134,6 +139,7 @@ impl PhysData {
 
             // 构造 D_m: 每一列是 pi - p0
             let d_m = nalgebra::Matrix3::from_columns(&[p1 - p0, p2 - p0, p3 - p0]);
+            B_mat.push(d_m.clone());
 
             B_buffer_data.extend_from_slice(d_m.try_inverse().unwrap().as_slice());
         }
@@ -152,6 +158,24 @@ impl PhysData {
         let is_driven = vec![0u32; positions.len()];
         let is_driven_buffer = buffers.add(ShaderStorageBuffer::from(is_driven));
 
+        let mut alpha = vec![];
+        let mut rest_volume = vec![];
+        let params_mu = 1e9f32; // hard coda
+        for i in 0..positions.len() {
+            let rest_volume_i = 1.0 / 6.0 * B_mat[i].determinant().abs();
+            rest_volume.push(rest_volume_i);
+
+            if (rest_volume_i <= 0.0) {
+                panic!("rest_volume <= 0.0, please check the input tet mesh  or init the rest_volume(by init_B) first!");
+            }
+            // this->alpha_tilde[i] = inv_h2 * inv_mu * 1.0/rest_volume[i];
+            let alpha_i = (1.0f32 / params_mu) * 1.0 / rest_volume_i;
+
+            // this->alpha_hyd[i] =  1.0 / this->lame_lambda * 1.0/rest_volume[i];
+            alpha.push(alpha_i);
+        }
+        let alpha_buffer = buffers.add(ShaderStorageBuffer::from(alpha));
+
         PhysData {
             pos: pos_buffer.clone(),
             tet_indices: tet_indices_buffer,
@@ -161,6 +185,7 @@ impl PhysData {
             lagrange: lagrange_buffer,
             residuals: residuals_buffer,
             is_dirven: is_driven_buffer,
+            alpha: alpha_buffer,
             points_size,
             tet_size,
         }
@@ -197,6 +222,7 @@ pub fn dump_mesh_cpu_data_system(
     mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     mut asset_materials: ResMut<Assets<StandardMaterial>>,
     mut ext_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, TriData>>>,
+    // sim_params_buffer: Res<SimParamsBuffer>,
 ) {
     let Ok((_scene_root, tet)) = scene_roots.get(trigger.target()) else {
         return;
@@ -281,7 +307,12 @@ pub fn dump_mesh_cpu_data_system(
                     });
 
                 info!("tet data: pos: {:?}, indices: {:?}", tet_pos, tet_indices);
-                let phys_data = PhysData::new(&tet_pos, &tet_indices, &mut buffers);
+                let phys_data = PhysData::new(
+                    &tet_pos,
+                    &tet_indices,
+                    &mut buffers,
+                    // sim_params_buffer.buffer.get(),
+                );
 
                 let to_tet_indices = buffers.add(ShaderStorageBuffer::from(new_idx));
                 // Create a copy of the material and override base color
@@ -320,6 +351,7 @@ pub enum SimState {
 pub struct SimPipelineData {
     layout: BindGroupLayout,
     sim_pipeline: CachedComputePipelineId,
+    copy_mid_pos_pipeline: CachedComputePipelineId,
 }
 
 impl SimPipelineData {
@@ -337,28 +369,40 @@ impl SimPipelineData {
                     binding_types::storage_buffer_read_only::<[u32; 4]>(false), // tet_indices_buffer
                     binding_types::storage_buffer_read_only::<f32>(false),      // inv_mass_buffer
                     binding_types::storage_buffer_read_only::<f32>(false),      // B_flat_buffer
-                    binding_types::storage_buffer_read_only::<f32>(false),      // pos_mid_buffer
+                    binding_types::storage_buffer::<f32>(false),                // pos_mid_buffer
                     binding_types::storage_buffer::<f32>(false),                // lagrange_buffer
                     binding_types::storage_buffer::<f32>(false),                // residuals_buffer
                     binding_types::storage_buffer_read_only::<u32>(false),      // is_driven_buffer
                     binding_types::uniform_buffer::<SimParams>(false),          // params
+                    binding_types::storage_buffer_read_only::<f32>(false),                // alpha
                 ),
             ),
         );
         let shader = asset_server.load(ARAP_SHADER_ASSET_PATH);
         let sim_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             layout: vec![layout.clone()],
-            shader,
+            shader: shader.clone(),
             entry_point: Cow::from("cs_arap"),
             label: Some(Cow::from("sim_compute_pipeline")),
             push_constant_ranges: vec![],
             shader_defs: vec![],
             zero_initialize_workgroup_memory: false,
         });
+        let copy_mid_pos_pipeline =
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                layout: vec![layout.clone()],
+                shader,
+                entry_point: Cow::from("copy_mid_pos"),
+                label: Some(Cow::from("copy_mid_pos_compute_pipeline")),
+                push_constant_ranges: vec![],
+                shader_defs: vec![],
+                zero_initialize_workgroup_memory: false,
+            });
 
         return SimPipelineData {
             layout,
             sim_pipeline,
+            copy_mid_pos_pipeline,
         };
     }
 }
@@ -467,6 +511,10 @@ fn prepare_sim_data_bind_groups(
         warn!("phys data residuals_gpu does not exist");
         return;
     };
+    let Some(alpha_gpu) = gpu_ssbos.get(&phys_data.alpha) else {
+        warn!("phys data alpha_gpu does not exist");
+        return;
+    };
     // let Some(sim_params_gpu) = gpu_ssbos.get(&phys_data.is_dirven) else {
     //     return;
     // };
@@ -485,6 +533,7 @@ fn prepare_sim_data_bind_groups(
         .buffer()
         .unwrap()
         .as_entire_binding();
+    let alpha_buffer_id = alpha_gpu.buffer.as_entire_binding();
 
     let bind_group_0 = render_device.create_bind_group(
         None,
@@ -499,6 +548,7 @@ fn prepare_sim_data_bind_groups(
             residuals_buffer_id,
             is_driven_buffer_id,
             sim_params_buffer_id,
+            alpha_buffer_id,
         )),
     );
     commands.insert_resource(PhysDataBindGroups {
@@ -577,11 +627,20 @@ impl render_graph::Node for SimNode {
             }
             SimState::UpdatePos => {
                 let update_pipeline = pipeline_cache
+                    .get_compute_pipeline(pipeline.copy_mid_pos_pipeline)
+                    .unwrap();
+                // copy mid pos
+                pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
+                pass.set_pipeline(update_pipeline);
+                let wg = 64u32;
+                pass.dispatch_workgroups((phys_data.points_size + wg - 1) / wg, 1, 1);
+
+                // sim
+                let update_pipeline = pipeline_cache
                     .get_compute_pipeline(pipeline.sim_pipeline)
                     .unwrap();
                 pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
                 pass.set_pipeline(update_pipeline);
-                let wg = 64u32;
                 pass.dispatch_workgroups((phys_data.tet_size + wg - 1) / wg, 1, 1);
             }
         }
@@ -751,7 +810,7 @@ mod tests {
             // this->alpha_hyd[i] =  1.0 / this->lame_lambda * 1.0/rest_volume[i];
             alpha.push(alpha_i);
         }
-        
+
         println!("alpha: {:?}, rest_vol: {:?}", alpha, rest_volume);
         let alpha_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("alpha"),
