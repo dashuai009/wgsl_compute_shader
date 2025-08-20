@@ -36,6 +36,7 @@ use nalgebra;
 use slint::wgpu_24::wgpu;
 use slint::{Model, SharedString};
 use std::borrow::Cow;
+use std::collections::HashMap;
 // N_tri, N_pos, N_tet
 // indices_u32: [[u32; 3]; N_tri]
 // positions: [[f32; 3]; N_tri] in glb file, bageyalu -> 排序  --|
@@ -52,7 +53,7 @@ pub struct TetData {
 }
 
 #[repr(C)]
-#[derive(ShaderType, Default, Copy, Clone, Pod, Zeroable)]
+#[derive(ShaderType, Default, Copy, Clone, Pod, Zeroable, Debug)]
 pub struct SimParams {
     dt: f32,
     omega: f32,
@@ -75,8 +76,8 @@ pub fn prepare_sim_params_buffer(
     frame_count: Res<FrameCount>,
 ) {
     let buffer = sim_params_buffer.buffer.get_mut();
-    buffer.dt = time.elapsed_secs_wrapped();
-    buffer.mu = 1e9;
+    // buffer.dt = time.elapsed_secs_wrapped();
+    buffer.mu = 1e8;
     buffer.omega = 0.1;
     // buffer.delta_time = time.delta_secs();
     // buffer.frame_count = frame_count.0;
@@ -108,6 +109,8 @@ impl PhysData {
         mut buffers: &mut ResMut<Assets<ShaderStorageBuffer>>,
         // params: &SimParams,
     ) -> Self {
+        let params_mu = 1e8f32; // hard coda
+        let total_mass = 16000f32;
         let points_size = positions.len() as u32;
         let tet_size = tet_indices.len() as u32;
 
@@ -125,8 +128,6 @@ impl PhysData {
             .collect::<Vec<_>>();
         let tet_indices_buffer = buffers.add(ShaderStorageBuffer::from(tet_indices_buffer_data));
 
-        let inv_mass_buffer_data = vec![1.0f32; positions.len()];
-        let inv_mass_buffer = buffers.add(ShaderStorageBuffer::from(inv_mass_buffer_data));
 
         let mut B_buffer_data = vec![];
         let mut B_mat = vec![];
@@ -160,7 +161,7 @@ impl PhysData {
 
         let mut alpha = vec![];
         let mut rest_volume = vec![];
-        let params_mu = 1e9f32; // hard coda
+        let mut total_volume = 0.0f32;
         for i in 0..positions.len() {
             let rest_volume_i = 1.0 / 6.0 * B_mat[i].determinant().abs();
             rest_volume.push(rest_volume_i);
@@ -170,14 +171,32 @@ impl PhysData {
             }
             // this->alpha_tilde[i] = inv_h2 * inv_mu * 1.0/rest_volume[i];
             let alpha_i = (1.0f32 / params_mu) * 1.0 / rest_volume_i;
+            total_volume += rest_volume_i;           
 
             // this->alpha_hyd[i] =  1.0 / this->lame_lambda * 1.0/rest_volume[i];
             alpha.push(alpha_i);
         }
         let alpha_buffer = buffers.add(ShaderStorageBuffer::from(alpha));
 
+        //
+        let mut inv_mass_buffer_data = vec![0.0f32; positions.len()];
+        let mass_density = total_mass / total_volume;
+        for (i, [ia, ib, ic, id]) in tet_indices.into_iter().enumerate() {
+            let tet_mass = mass_density * rest_volume[*ia as usize];
+            let avg_mass = tet_mass / 4.0;
+            inv_mass_buffer_data[*ia as usize] += avg_mass;
+            inv_mass_buffer_data[*ib as usize] += avg_mass;
+            inv_mass_buffer_data[*ic as usize] += avg_mass;
+            inv_mass_buffer_data[*id as usize] += avg_mass;
+        }
+        inv_mass_buffer_data = inv_mass_buffer_data
+            .into_iter()
+            .map(|x| 1.0 / x)
+            .collect::<Vec<_>>();
+
+        let inv_mass_buffer = buffers.add(ShaderStorageBuffer::from(inv_mass_buffer_data));
         PhysData {
-            pos: pos_buffer.clone(),
+            pos: pos_buffer,
             tet_indices: tet_indices_buffer,
             inv_mass: inv_mass_buffer,
             B: b_buffer_data,
@@ -267,27 +286,46 @@ pub fn dump_mesh_cpu_data_system(
                     None => (0..positions.len() as u32).collect(), // 无索引时按顺序展开
                 };
 
-                info!(
-                    "Entity {:?}:pos_size: {}, positions = {:?},indices_size: {}, indices = {:?}, topology = {:?}",
-                    e,
-                    positions.len(),
-                    positions,
-                    indices_u32.len(),
-                    indices_u32,
-                    mesh.primitive_topology()
-                );
+                // info!(
+                //     "Entity {:?}:pos_size: {}, positions = {:?},indices_size: {}, indices = {:?}, topology = {:?}",
+                //     e,
+                //     positions.len(),
+                //     positions,
+                //     indices_u32.len(),
+                //     indices_u32,
+                //     mesh.primitive_topology()
+                // );
 
                 // println!("positions: {:?}, tet_pos : {:?}", positions, tet_pos);
-                let mut new_idx = vec![]; //
+
+                fn key_quant3(p: [f32; 3]) -> (i32, i32, i32) {
+                    let scale = 1e5;
+                    (
+                        (p[0] * scale).round() as i32,
+                        (p[1] * scale).round() as i32,
+                        (p[2] * scale).round() as i32,
+                    )
+                }
+
+                let mut pos_to_idx: HashMap<(i32, i32, i32), u32> = HashMap::new();
+                pos_to_idx.reserve(tet_pos.len());
+
+                // 构建映射: tet_pos[k] -> k
+                for (k, p) in tet_pos.iter().enumerate() {
+                    pos_to_idx.insert(key_quant3(*p), k as u32);
+                }
+
+                // 根据 indices 直接查表
+                let mut new_idx = Vec::with_capacity(indices_u32.len());
+                println!("indices_u32: {:?}", indices_u32[0]);
                 for i in &indices_u32 {
-                    for k in 0..tet_pos.len() {
-                        if tet_pos[k] == positions[*i as usize] {
-                            new_idx.push(k as u32);
-                            break;
-                        }
+                    if let Some(&k) = pos_to_idx.get(&key_quant3(positions[*i as usize])) {
+                        new_idx.push(k);
+                    } else {
+                        panic!("positions[{}] = {:?} not found in tet_pos", i, positions[*i as usize]);
                     }
                 }
-                println!("new_idx: {:?}", new_idx);
+                // println!("new_idx: {:?}", new_idx);
 
                 if let Some(mut iii) = mesh.indices_mut() {
                     *iii = Indices::U32(new_idx.clone());
@@ -306,7 +344,7 @@ pub fn dump_mesh_cpu_data_system(
                         new_material
                     });
 
-                info!("tet data: pos: {:?}, indices: {:?}", tet_pos, tet_indices);
+                // info!("tet data: pos: {:?}, indices: {:?}", tet_pos, tet_indices);
                 let phys_data = PhysData::new(
                     &tet_pos,
                     &tet_indices,
@@ -470,7 +508,9 @@ fn prepare_sim_data_bind_groups(
     render_queue: Res<RenderQueue>,
 ) {
     let buffer = sim_params_buffer.buffer.get_mut();
-    buffer.omega = 1.0f32;
+    buffer.dt = 0.033f32;
+    // buffer.omega = 1.0f32;
+    buffer.omega = 0.1f32;
     buffer.NT = phys_data.tet_size;
     buffer.NV = phys_data.points_size;
 
@@ -609,6 +649,8 @@ impl render_graph::Node for SimNode {
         let bind_groups = world.resource::<PhysDataBindGroups>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<SimPipelineData>();
+        let sim_params_buffer = world.resource::<SimParamsBuffer>();
+        println!("{:?}", sim_params_buffer.buffer.get());
 
         let mut pass = render_context
             .command_encoder()
@@ -626,22 +668,25 @@ impl render_graph::Node for SimNode {
                 // pass.dispatch_workgroups(SIZE.0 / WORKGROUP_SIZE, SIZE.1 / WORKGROUP_SIZE, 1);
             }
             SimState::UpdatePos => {
-                let update_pipeline = pipeline_cache
-                    .get_compute_pipeline(pipeline.copy_mid_pos_pipeline)
-                    .unwrap();
-                // copy mid pos
-                pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
-                pass.set_pipeline(update_pipeline);
-                let wg = 64u32;
-                pass.dispatch_workgroups((phys_data.points_size + wg - 1) / wg, 1, 1);
+                let iter = 20;
+                for k in 0..iter {
+                    let update_pipeline = pipeline_cache
+                        .get_compute_pipeline(pipeline.copy_mid_pos_pipeline)
+                        .unwrap();
+                    // copy mid pos
+                    pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
+                    pass.set_pipeline(update_pipeline);
+                    let wg = 64u32;
+                    pass.dispatch_workgroups((phys_data.points_size + wg - 1) / wg, 1, 1);
 
-                // sim
-                let update_pipeline = pipeline_cache
-                    .get_compute_pipeline(pipeline.sim_pipeline)
-                    .unwrap();
-                pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
-                pass.set_pipeline(update_pipeline);
-                pass.dispatch_workgroups((phys_data.tet_size + wg - 1) / wg, 1, 1);
+                    // sim
+                    let update_pipeline = pipeline_cache
+                        .get_compute_pipeline(pipeline.sim_pipeline)
+                        .unwrap();
+                    pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
+                    pass.set_pipeline(update_pipeline);
+                    pass.dispatch_workgroups((phys_data.tet_size + wg - 1) / wg, 1, 1);
+                }
             }
         }
 

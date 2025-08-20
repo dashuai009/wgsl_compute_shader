@@ -196,14 +196,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
 
     let models = slint::VecModel::from_slice(&[
-        // GLTFModel {
-        //     name: "Box".into(),
-        //     path: "output.gltf".into(),
-        //     center: Vec3::new(6.0, 8.0, 8.0),
-        // },
         GLTFModel {
             name: "bunny".into(),
             path: "models/bunny/".into(),
+            center: Vec3::new(6.0, 8.0, 8.0),
+        },
+        GLTFModel {
+            name: "box".into(),
+            path: "models/box/".into(),
             center: Vec3::new(6.0, 8.0, 8.0),
         },
         // GLTFModel {
@@ -275,7 +275,7 @@ struct ModelBasePath(String);
 
 fn setup(mut commands: Commands, camera: Res<CameraPos>) {
     commands.spawn(DirectionalLight {
-        illuminance: 100_000.0,
+        illuminance: 1_000.0,
         ..default()
     });
     commands.spawn((
