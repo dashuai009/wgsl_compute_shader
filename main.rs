@@ -97,13 +97,16 @@ export component AppWindow inherits Window {
 }
 }
 
+
+#[cfg_attr(target_arch = "wasm32",
+    wasm_bindgen::prelude::wasm_bindgen(start))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (model_selector_sender, model_selector_receiver) = smol::channel::bounded::<GLTFModel>(1);
+    let (model_selector_sender, model_selector_receiver) = tokio::sync::mpsc::channel::<GLTFModel>(1);
 
-    let (download_progress_sender, download_progress_receiver) =
-        smol::channel::bounded::<(SharedString, f32)>(5);
+    let (download_progress_sender, mut download_progress_receiver) =
+        tokio::sync::mpsc::channel::<(SharedString, f32)>(5);
 
-    let (new_texture_receiver, control_message_sender) =
+    let (mut new_texture_receiver, control_message_sender) =
         spin_on::spin_on(slint_bevy_adapter::run_bevy_app_with_slint(
             |app| {
                 app.add_plugins(web_asset::WebAssetReaderPlugin(download_progress_sender));
@@ -182,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     slint::spawn_local(async move {
         loop {
-            let Ok((url, progress)) = download_progress_receiver.recv().await else {
+            let Some((url, progress)) = download_progress_receiver.recv().await else {
                 break;
             };
             let Some(app) = app_weak.upgrade() else {
@@ -243,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     model_selector_sender
-        .send_blocking(models.row_data(0).unwrap())
+        .blocking_send(models.row_data(0).unwrap())
         .unwrap();
 
     app_window.on_load_model(move |index| {
@@ -300,7 +303,7 @@ fn setup(mut commands: Commands, camera: Res<CameraPos>) {
 }
 
 fn reload_model_from_channel(
-    receiver: smol::channel::Receiver<GLTFModel>,
+    mut receiver: tokio::sync::mpsc::Receiver<GLTFModel>,
 ) -> impl FnMut(
     Commands,
     Res<AssetServer>,

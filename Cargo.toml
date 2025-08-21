@@ -1,6 +1,6 @@
 [package]
 name = "simulations"
-version = "1.13.0"
+version = "0.0.1"
 authors = ["dashuai009 <dashuai009@gmail.com>"]
 edition = "2021"
 publish = false
@@ -14,19 +14,25 @@ path = "main.rs"
 [lib]
 name = "simulations"
 crate-type = ["cdylib"]
-path = "lib.rs"
+path = "main.rs"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = { version = "0.2" }
+tokio = { version = "1.47", features = ["sync"]}
+
+# 针对原生目标，启用完整功能
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1.47", features = ["full"] }
+
 
 [dependencies]
 slint = { version = "1.12.1", features = ["unstable-wgpu-24"] }
 spin_on = { version = "0.1.1" }
 bevy = { version = "0.16.0", default-features = false, features = ["bevy_core_pipeline", "bevy_pbr", "bevy_window", "bevy_scene", "bevy_gltf", "bevy_log", "jpeg", "png", "tonemapping_luts", "multi_threaded", "bevy_sprite"]  }
-smol = { version = "2.0.2" }
 async-compat = { version = "0.2.4" }
 reqwest = { version = "0.12.22", features = ["stream"] }
 bytemuck = "1.23.1"
-futures-intrusive = "0.5.0"
 pollster = "0.4.0"
 nalgebra = "0.34.0"
-approx = "0.5.1"
 anyhow = "1.0.99"
 rand = "0.8.5"

@@ -48,8 +48,8 @@ pub async fn run_bevy_app_with_slint(
     bevy_main: impl FnOnce(App) + Send + 'static,
 ) -> Result<
     (
-        smol::channel::Receiver<wgpu::Texture>,
-        smol::channel::Sender<ControlMessage>,
+        tokio::sync::mpsc::Receiver<wgpu::Texture>,
+        tokio::sync::mpsc::Sender<ControlMessage>,
     ),
     slint::PlatformError,
 > {
@@ -86,10 +86,10 @@ pub async fn run_bevy_app_with_slint(
         });
     selector.select()?;
 
-    let (control_message_sender, control_message_receiver) =
-        smol::channel::bounded::<ControlMessage>(2);
+    let (control_message_sender, mut control_message_receiver) =
+        tokio::sync::mpsc::channel::<ControlMessage>(2);
     let (bevy_front_buffer_sender, bevy_front_buffer_receiver) =
-        smol::channel::bounded::<wgpu::Texture>(2);
+        tokio::sync::mpsc::channel::<wgpu::Texture>(2);
 
     let wgpu_device = render_device.wgpu_device().clone();
 
@@ -128,14 +128,14 @@ pub async fn run_bevy_app_with_slint(
             let mut next_texture_view_id: u32 = 0;
 
             loop {
-                let mut next_back_buffer = match control_message_receiver.recv_blocking() {
-                    Ok(ControlMessage::ReleaseFrontBufferTexture { texture }) => texture,
-                    Ok(ControlMessage::ResizeBuffers { width, height }) => {
+                let mut next_back_buffer = match control_message_receiver.blocking_recv() {
+                    Some(ControlMessage::ReleaseFrontBufferTexture { texture }) => texture,
+                    Some(ControlMessage::ResizeBuffers { width, height }) => {
                         buffer_width = width;
                         buffer_height = height;
                         continue;
                     }
-                    Err(_) => break,
+                    _ => break,
                 };
 
                 if next_back_buffer.width() != buffer_width
@@ -212,17 +212,17 @@ pub async fn run_bevy_app_with_slint(
     });
 
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+        .blocking_send(ControlMessage::ReleaseFrontBufferTexture {
             texture: back_buffer,
         })
         .unwrap();
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+        .blocking_send(ControlMessage::ReleaseFrontBufferTexture {
             texture: inflight_buffer,
         })
         .unwrap();
     control_message_sender
-        .send_blocking(ControlMessage::ReleaseFrontBufferTexture {
+        .blocking_send(ControlMessage::ReleaseFrontBufferTexture {
             texture: front_buffer,
         })
         .unwrap();
@@ -231,9 +231,9 @@ pub async fn run_bevy_app_with_slint(
 }
 
 #[derive(Resource, Deref)]
-struct FrontBufferReturnSender(smol::channel::Sender<wgpu::Texture>);
+struct FrontBufferReturnSender(tokio::sync::mpsc::Sender<wgpu::Texture>);
 /// Plugin for Render world part of work
-struct SlintRenderToTexturePlugin(smol::channel::Sender<wgpu::Texture>);
+struct SlintRenderToTexturePlugin(tokio::sync::mpsc::Sender<wgpu::Texture>);
 impl Plugin for SlintRenderToTexturePlugin {
     fn build(&self, app: &mut App) {
         let render_app = app.sub_app_mut(RenderApp);
@@ -268,7 +268,7 @@ impl render_graph::Node for SlintSwapChainDriver {
         if let Some(bb) = &back_buffer.0 {
             // silently ignore errors when the sender is closed. Reporting an error would just result in bevy panicing,
             // while a closed channel is indicating a shutdown condition.
-            front_buffer_sender.0.send_blocking(bb.clone()).ok();
+            front_buffer_sender.0.blocking_send(bb.clone()).ok();
         }
 
         Ok(())

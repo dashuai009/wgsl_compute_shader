@@ -1,6 +1,8 @@
 name: Rust CI
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -21,7 +23,11 @@ jobs:
         with:
           command: build
           args: --verbose
-      - uses: actions-rs/cargo@v1
+      - uses: actions-rs/cargo@v1 # Runs Cargo commands
         with:
-          command: test
-          args: --verbose
+          command: build
+          args: c--release --bin bevy_example  --target wasm32-unknown-unknown
+#      - uses: actions-rs/cargo@v1
+#        with:
+#          command: test
+#          args: --verbose

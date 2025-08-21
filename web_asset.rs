@@ -19,10 +19,9 @@ fn map_err(err: reqwest::Error) -> bevy::asset::io::AssetReaderError {
 
 async fn get(
     url: impl reqwest::IntoUrl,
-    progress_channel: smol::channel::Sender<(SharedString, f32)>,
+    progress_channel: tokio::sync::mpsc::Sender<(SharedString, f32)>,
 ) -> Result<bevy::asset::io::VecReader, bevy::asset::io::AssetReaderError> {
-    use smol::stream::StreamExt;
-
+    use bevy::tasks::futures_lite::StreamExt;
     let url = url.into_url().unwrap();
 
     let response = reqwest::get(url.clone()).await.map_err(map_err)?;
@@ -49,7 +48,7 @@ async fn get(
     Ok(bevy::asset::io::VecReader::new(data))
 }
 
-struct WebAssetLoader(smol::channel::Sender<(SharedString, f32)>);
+struct WebAssetLoader(tokio::sync::mpsc::Sender<(SharedString, f32)>);
 
 impl AssetReader for WebAssetLoader {
     fn read<'a>(
@@ -91,7 +90,7 @@ impl AssetReader for WebAssetLoader {
     }
 }
 
-pub struct WebAssetReaderPlugin(pub smol::channel::Sender<(SharedString, f32)>);
+pub struct WebAssetReaderPlugin(pub tokio::sync::mpsc::Sender<(SharedString, f32)>);
 
 impl Plugin for WebAssetReaderPlugin {
     fn build(&self, app: &mut App) {
