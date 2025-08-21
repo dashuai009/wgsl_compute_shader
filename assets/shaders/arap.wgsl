@@ -742,6 +742,15 @@ fn copy_mid_pos(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 @compute @workgroup_size(64, 1, 1)
+fn reset_lagrange(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let t = gid.x;
+    if (t >= params.NT) { // 边界保护：只处理 [0, NT)
+        return;
+    }
+    lagrange[t] = 0.0;
+}
+
+@compute @workgroup_size(64, 1, 1)
 fn cs_arap(@builtin(global_invocation_id) gid: vec3<u32>) {
     let t = gid.x;
     if (t >= params.NT) { return; }

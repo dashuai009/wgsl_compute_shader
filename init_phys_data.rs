@@ -390,6 +390,7 @@ pub struct SimPipelineData {
     layout: BindGroupLayout,
     sim_pipeline: CachedComputePipelineId,
     copy_mid_pos_pipeline: CachedComputePipelineId,
+    reset_lagrange_pipeline: CachedComputePipelineId,
 }
 
 impl SimPipelineData {
@@ -429,7 +430,7 @@ impl SimPipelineData {
         let copy_mid_pos_pipeline =
             pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 layout: vec![layout.clone()],
-                shader,
+                shader: shader.clone(),
                 entry_point: Cow::from("copy_mid_pos"),
                 label: Some(Cow::from("copy_mid_pos_compute_pipeline")),
                 push_constant_ranges: vec![],
@@ -437,10 +438,21 @@ impl SimPipelineData {
                 zero_initialize_workgroup_memory: false,
             });
 
+        let reset_lagrange_pipeline =
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                layout: vec![layout.clone()],
+                shader,
+                entry_point: Cow::from("reset_lagrange"),
+                label: Some(Cow::from("reset_lagrange_compute_pipeline")),
+                push_constant_ranges: vec![],
+                shader_defs: vec![],
+                zero_initialize_workgroup_memory: false,
+            });
         return SimPipelineData {
             layout,
             sim_pipeline,
             copy_mid_pos_pipeline,
+            reset_lagrange_pipeline
         };
     }
 }
@@ -670,15 +682,23 @@ impl render_graph::Node for SimNode {
             SimState::UpdatePos => {
                 let iter = 20;
                 for k in 0..iter {
-                    let update_pipeline = pipeline_cache
+                    let update_mid_pos_pipeline = pipeline_cache
                         .get_compute_pipeline(pipeline.copy_mid_pos_pipeline)
                         .unwrap();
                     // copy mid pos
                     pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
-                    pass.set_pipeline(update_pipeline);
+                    pass.set_pipeline(update_mid_pos_pipeline);
                     let wg = 64u32;
                     pass.dispatch_workgroups((phys_data.points_size + wg - 1) / wg, 1, 1);
 
+                    // reset_lagrange
+                    let reset_lagrange_pipeline = pipeline_cache
+                        .get_compute_pipeline(pipeline.reset_lagrange_pipeline)
+                        .unwrap();
+                    pass.set_bind_group(0, &bind_groups.phys_data_bind_group, &[]);
+                    pass.set_pipeline(reset_lagrange_pipeline);
+                    pass.dispatch_workgroups((phys_data.tet_size + wg - 1) / wg, 1, 1);
+                    
                     // sim
                     let update_pipeline = pipeline_cache
                         .get_compute_pipeline(pipeline.sim_pipeline)
