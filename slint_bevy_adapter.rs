@@ -21,7 +21,6 @@ use bevy::{
         RenderApp, RenderPlugin,
     },
 };
-use crate::bin_asset_loader::BinAssetPlugin;
 
 /// This enum describes the two kinds of message the Slint application send to the bevy integration thread.
 pub enum ControlMessage {
@@ -206,7 +205,6 @@ pub async fn run_bevy_app_with_slint(
         );
         app.add_plugins(SlintRenderToTexturePlugin(bevy_front_buffer_sender));
         app.add_plugins(ExtractResourcePlugin::<BackBuffer>::default());
-        app.add_plugins(BinAssetPlugin);
 
         bevy_main(app)
     });

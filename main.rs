@@ -1,11 +1,11 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: MIT
 
+use crate::bin_asset_loader::BinAssetPlugin;
+use crate::init_phys_data::{SimPlugin, TetData};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::{prelude::*, scene::SceneInstanceReady};
 use slint::{Model, SharedString};
-
-use crate::init_phys_data::{SimPlugin, TetData};
 
 mod init_phys_data;
 mod slint_bevy_adapter;
@@ -97,11 +97,10 @@ export component AppWindow inherits Window {
 }
 }
 
-
-#[cfg_attr(target_arch = "wasm32",
-    wasm_bindgen::prelude::wasm_bindgen(start))]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (model_selector_sender, model_selector_receiver) = tokio::sync::mpsc::channel::<GLTFModel>(1);
+    let (model_selector_sender, model_selector_receiver) =
+        tokio::sync::mpsc::channel::<GLTFModel>(1);
 
     let (download_progress_sender, mut download_progress_receiver) =
         tokio::sync::mpsc::channel::<(SharedString, f32)>(5);
@@ -118,6 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //     "https://github.com/KhronosGroup/glTF-Sample-Assets/raw/refs/heads/main/"
                     //         .into(),
                     // ))
+                    .add_plugins(BinAssetPlugin)
                     .add_plugins(MaterialPlugin::<
                         ExtendedMaterial<StandardMaterial, init_phys_data::TriData>,
                     >::default())
@@ -330,10 +330,10 @@ fn reload_model_from_channel(
         commands.spawn((
             SceneRoot(
                 //asset_server.load(GltfAssetLabel::Scene(0).from_asset("DamagedHelmet.glb")),
-                asset_server.load(
-                    GltfAssetLabel::Scene(0)
-                        .from_asset(format!("{}{}{}.glb", base_path.0, new_model.path, new_model.name)),
-                ),
+                asset_server.load(GltfAssetLabel::Scene(0).from_asset(format!(
+                    "{}{}{}.glb",
+                    base_path.0, new_model.path, new_model.name
+                ))),
             ),
             TetData {
                 tet_indices: asset_server.load(format!(
