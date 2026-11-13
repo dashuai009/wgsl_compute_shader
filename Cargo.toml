@@ -1,38 +1,69 @@
 [package]
-name = "simulations"
-version = "0.0.1"
+name = "wgsl_compute_shader"
+version = "0.1.0"
 authors = ["dashuai009 <dashuai009@gmail.com>"]
-edition = "2021"
+edition = "2024"
 publish = false
 license = "MIT"
-description = "Simulations Example"
-
-[[bin]]
-name = "bevy_example"
-path = "main.rs"
+description = "Real-time GPU XPBD Soft-Body Simulation with Bevy 0.20 and WGSL Compute Shaders"
 
 [lib]
-name = "simulations"
-crate-type = ["cdylib"]
-path = "main.rs"
+name = "wgsl_compute_shader"
+path = "src/lib.rs"
 
-[target.'cfg(target_family = "wasm")'.dependencies]
-wasm-bindgen = { version = "0.2" }
-tokio = { version = "1.47", features = ["sync"]}
-
-# 针对原生目标，启用完整功能
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { version = "1.47", features = ["full"] }
-
+[[bin]]
+name = "wgsl_softbody"
+path = "src/main.rs"
 
 [dependencies]
-slint = { version = "1.12.1", features = ["unstable-wgpu-24"] }
-spin_on = { version = "0.1.1" }
-bevy = { version = "0.16.0", default-features = false, features = ["bevy_core_pipeline", "bevy_pbr", "bevy_window", "bevy_scene", "bevy_gltf", "bevy_log", "jpeg", "png", "tonemapping_luts", "multi_threaded", "bevy_sprite"]  }
-async-compat = { version = "0.2.4" }
-reqwest = { version = "0.12.22", features = ["stream"] }
-bytemuck = "1.23.1"
+bevy = { version = "0.20.1", default-features = false, features = [
+    "std",
+    "default_app",
+    "ui_bevy_render",
+    "bevy_ui_widgets",
+    "ui_picking",
+    "bevy_light",
+    "bevy_pbr",
+    "bevy_post_process",
+    "bevy_anti_alias",
+    "bevy_winit",
+    "default_font",
+    "tonemapping_luts",
+    "zstd_rust",
+    "keyboard",
+    "mouse",
+    "touch",
+] }
+bytemuck = { version = "1.25", features = ["derive"] }
+nalgebra = "0.34"
+anyhow = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = [
+    "multi_threaded",
+    "x11",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = [
+    "web",
+    "webgpu",
+] }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+wgpu = "30"
 pollster = "0.4.0"
-nalgebra = "0.34.0"
-anyhow = "1.0.99"
-rand = "0.8.5"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+strip = "debuginfo"

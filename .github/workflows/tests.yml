@@ -12,22 +12,33 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4 # Checks out your repository under $GITHUB_WORKSPACE
-      - uses: actions-rs/toolchain@v1 # Installs the Rust toolchain
+      - uses: actions/checkout@v4
+
+      - name: Install Linux graphics & Vulkan Lavapipe dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libudev-dev \
+            mesa-vulkan-drivers
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable # Or 'nightly', 'beta', or a specific version like '1.70.0'
-          override: true # Overrides the default toolchain
-      - uses: actions-rs/cargo@v1 # Runs Cargo commands
-        with:
-          command: build
-          args: --verbose
-      - uses: actions-rs/cargo@v1 # Runs Cargo commands
-        with:
-          command: build
-          args: c--release --bin bevy_example  --target wasm32-unknown-unknown
-#      - uses: actions-rs/cargo@v1
-#        with:
-#          command: test
-#          args: --verbose
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check native targets
+        run: cargo check --all-targets
+
+      - name: Build WASM WebGPU target
+        run: cargo build --profile wasm-release --target wasm32-unknown-unknown --bin wgsl_softbody
+
+      - name: Run GPU Signed-SVD & XPBD tests
+        run: cargo test --release

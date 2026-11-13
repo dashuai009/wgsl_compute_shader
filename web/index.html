@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>WGSL XPBD Soft-Body Simulation</title>
+    <meta
+      name="description"
+      content="Real-time GPU tetrahedral XPBD soft-body physics (Signed-SVD ARAP + volume preservation) powered by Rust, Bevy 0.20, and WebGPU Compute Shaders."
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #12141c;
+        --card-bg: rgba(20, 24, 34, 0.9);
+        --border: rgba(255, 255, 255, 0.1);
+        --text: #eef2f9;
+        --muted: #98a3b8;
+        --accent: #3d8ae0;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      #canvas-wrap {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #bevy-canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        outline: none;
+        touch-action: none;
+      }
+
+      .top-links {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        z-index: 20;
+        display: flex;
+        gap: 8px;
+      }
+
+      .top-links a {
+        padding: 6px 11px;
+        border-radius: 8px;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 500;
+        text-decoration: none;
+        backdrop-filter: blur(8px);
+        transition: color 0.15s ease, border-color 0.15s ease;
+      }
+
+      .top-links a:hover {
+        color: var(--text);
+        border-color: rgba(255, 255, 255, 0.24);
+      }
+
+      .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: radial-gradient(circle at 50% 35%, #1a2030 0%, #10131b 75%);
+        transition: opacity 0.28s ease;
+      }
+
+      .overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .status-card {
+        max-width: 440px;
+        width: 100%;
+        padding: 24px 26px;
+        border-radius: 14px;
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+        text-align: center;
+      }
+
+      .spinner {
+        width: 34px;
+        height: 34px;
+        margin: 0 auto 14px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.14);
+        border-top-color: var(--accent);
+        animation: spin 0.85s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .status-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      .status-desc {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .status-desc code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="canvas-wrap" oncontextmenu="event.preventDefault()">
+      <canvas id="bevy-canvas"></canvas>
+    </div>
+
+    <nav class="top-links" aria-label="Project links">
+      <a href="https://dashuai009.github.io/blog/058/" target="_blank" rel="noreferrer">Blog</a>
+      <a href="https://github.com/dashuai009/wgsl_compute_shader" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+
+    <div id="overlay" class="overlay">
+      <div class="status-card">
+        <div id="spinner" class="spinner"></div>
+        <h1 id="status-title" class="status-title">Initializing WebGPU XPBD Solver...</h1>
+        <p id="status-desc" class="status-desc">
+          Loading WASM module, WGSL compute pipelines, and tetrahedral soft-body meshes.
+        </p>
+      </div>
+    </div>
+
+    <script type="module">
+      const overlay = document.getElementById("overlay");
+      const spinner = document.getElementById("spinner");
+      const titleEl = document.getElementById("status-title");
+      const descEl = document.getElementById("status-desc");
+
+      function showError(title, htmlMessage) {
+        spinner.style.display = "none";
+        overlay.classList.remove("hidden");
+        titleEl.textContent = title;
+        descEl.innerHTML = htmlMessage;
+      }
+
+      async function boot() {
+        if (!("gpu" in navigator)) {
+          showError(
+            "WebGPU Not Supported",
+            "This simulation runs tetrahedral XPBD compute shaders on <code>WebGPU</code>.<br/>Please open this page in Chrome / Edge 113+, Safari 18+, or Firefox with WebGPU enabled."
+          );
+          return;
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          showError(
+            "No WebGPU Adapter Available",
+            "Your browser exposes <code>navigator.gpu</code>, but no compatible GPU adapter could be acquired. Check hardware acceleration settings."
+          );
+          return;
+        }
+
+        try {
+          const mod = await import("./pkg/wgsl_softbody.js");
+          setTimeout(() => overlay.classList.add("hidden"), 80);
+          await mod.default();
+          overlay.classList.add("hidden");
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes("Using exceptions for control flow")) {
+            overlay.classList.add("hidden");
+            return;
+          }
+          console.error("Failed to start WGSL XPBD simulation:", err);
+          showError("Failed to Launch Simulation", `Runtime error: <code>${msg.replace(/</g, "&lt;")}</code>`);
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>
